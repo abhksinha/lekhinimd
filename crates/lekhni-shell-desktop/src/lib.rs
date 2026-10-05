@@ -3,6 +3,8 @@
 //! Provides the std-enabled shell implementations of Fs, Clock, Presenter,
 //! and runs the desktop pipeline proving keystroke latency within the < 8 ms budget.
 
+pub mod a11y_bridge;
+pub mod gpu_presenter;
 use lekhni_md::parser::MarkdownParser;
 use lekhni_raster::canvas::Canvas;
 use lekhni_raster::damage::Rect;

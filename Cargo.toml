@@ -9,6 +9,11 @@ members = [
     "crates/lekhni-shell-desktop",
     "crates/lekhni-ui",
     "crates/lekhni-store",
+    "crates/lekhni-layout",
+    "crates/lekhni-index",
+    "crates/lekhni-shell-web",
+    "crates/lekhni-shell-android",
+    "crates/lekhni-shell-ios",
 ]
 
 [workspace.package]

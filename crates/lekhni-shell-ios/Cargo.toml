@@ -1,5 +1,5 @@
 [package]
-name = "lekhni-shell-desktop"
+name = "lekhni-shell-ios"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,7 +9,6 @@ authors.workspace = true
 [dependencies]
 lekhni-base = { path = "../lekhni-base" }
 lekhni-text = { path = "../lekhni-text" }
-lekhni-md = { path = "../lekhni-md" }
 lekhni-raster = { path = "../lekhni-raster" }
 lekhni-shell = { path = "../lekhni-shell" }
 lekhni-ui = { path = "../lekhni-ui" }
