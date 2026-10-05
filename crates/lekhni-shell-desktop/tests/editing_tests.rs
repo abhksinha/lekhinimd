@@ -91,3 +91,43 @@ fn test_recovery_journal_atomic_lifecycle() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_workspace_mode_layout_invariants() {
+    use lekhni_layout::{compute_workspace_layout_with_mode, WorkspaceMode};
+
+    let width = 1280;
+    let height = 800;
+    let sidebar_w = 200;
+    let page_list_w = 240;
+    let splitter_w = 4;
+    let menu_bar_h = 32;
+    let status_bar_h = 24;
+
+    // 1. Split mode
+    let split_layout = compute_workspace_layout_with_mode(
+        width, height, sidebar_w, page_list_w, splitter_w, WorkspaceMode::Split, menu_bar_h, status_bar_h
+    );
+    assert_eq!(split_layout.menu_bar_rect.height, 32);
+    assert_eq!(split_layout.status_bar_rect.height, 24);
+    assert!(split_layout.editor_rect.width > 0);
+    assert!(split_layout.preview_rect.width > 0);
+    assert_eq!(split_layout.editor_rect.y, 32);
+    assert_eq!(split_layout.preview_rect.y, 32);
+    assert_eq!(split_layout.editor_rect.height, height - 32 - 24);
+    assert_eq!(split_layout.preview_rect.height, height - 32 - 24);
+
+    // 2. EditorOnly mode
+    let editor_layout = compute_workspace_layout_with_mode(
+        width, height, sidebar_w, page_list_w, splitter_w, WorkspaceMode::EditorOnly, menu_bar_h, status_bar_h
+    );
+    assert!(editor_layout.editor_rect.width > split_layout.editor_rect.width);
+    assert_eq!(editor_layout.preview_rect.width, 0);
+
+    // 3. PreviewOnly mode
+    let preview_layout = compute_workspace_layout_with_mode(
+        width, height, sidebar_w, page_list_w, splitter_w, WorkspaceMode::PreviewOnly, menu_bar_h, status_bar_h
+    );
+    assert_eq!(preview_layout.editor_rect.width, 0);
+    assert!(preview_layout.preview_rect.width > split_layout.preview_rect.width);
+}
