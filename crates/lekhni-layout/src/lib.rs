@@ -16,6 +16,7 @@ pub struct WorkspaceLayout {
     pub page_list_rect: Rect,
     pub splitter_2_rect: Rect,
     pub editor_rect: Rect,
+    pub splitter_3_rect: Rect,
     pub preview_rect: Rect,
     pub status_bar_rect: Rect,
 }
@@ -60,8 +61,8 @@ pub fn compute_workspace_layout_with_chrome(
     let content_y = menu_bar_height;
     let content_h = (window_height - menu_bar_height - status_bar_height).max(0);
 
-    let sb_w = sidebar_width.max(120).min(window_width / 2);
-    let pl_w = page_list_width.max(150).min(window_width / 2);
+    let sb_w = sidebar_width.max(100).min(window_width / 2);
+    let pl_w = page_list_width.max(100).min(window_width / 2);
 
     let sidebar_rect = Rect::new(0, content_y, sb_w, content_h);
     let splitter_1_rect = Rect::new(sb_w, content_y, splitter_width, content_h);
@@ -73,15 +74,17 @@ pub fn compute_workspace_layout_with_chrome(
     let editor_x = pl_x + pl_w + splitter_width;
     let remaining_w = (window_width - editor_x).max(100);
 
-    let (editor_rect, preview_rect) = if show_preview {
+    let (editor_rect, splitter_3_rect, preview_rect) = if show_preview {
         let half_w = remaining_w / 2;
         (
             Rect::new(editor_x, content_y, half_w, content_h),
+            Rect::new(editor_x + half_w - (splitter_width / 2), content_y, splitter_width, content_h),
             Rect::new(editor_x + half_w, content_y, remaining_w - half_w, content_h),
         )
     } else {
         (
             Rect::new(editor_x, content_y, remaining_w, content_h),
+            Rect::default(),
             Rect::default(),
         )
     };
@@ -93,6 +96,7 @@ pub fn compute_workspace_layout_with_chrome(
         page_list_rect,
         splitter_2_rect,
         editor_rect,
+        splitter_3_rect,
         preview_rect,
         status_bar_rect,
     }

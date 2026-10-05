@@ -42,6 +42,10 @@ fn main() {
 
     let mut width = 1100u16;
     let mut height = 700u16;
+    let mut sidebar_w = 190i32;
+    let mut page_list_w = 210i32;
+    let mut dragging_splitter: Option<usize> = None;
+
     let theme = Theme::dark();
     let mut fb = vec![theme.bg_workspace; (width as usize) * (height as usize)];
 
@@ -52,7 +56,7 @@ fn main() {
     let mut parser = MarkdownParser::new();
     let mut focus = ActiveFocus::Editor;
     let mut scroll_y: i32 = 0;
-    let mut status_msg = String::from("Ready. Ctrl+S to save, Tab to switch pane, Esc to quit.");
+    let mut status_msg = String::from("Ready. Drag splitters to resize, Ctrl+S to save, Tab to switch pane.");
 
     // 3. Open native X11 window
     println!("Connecting to display and opening native window...");
@@ -71,6 +75,9 @@ fn main() {
     let redraw = |fb: &mut [u32],
                   win_w: u16,
                   win_h: u16,
+                  sb_w: i32,
+                  pl_w: i32,
+                  active_drag: Option<usize>,
                   buffer: &PieceTable,
                   parser: &mut MarkdownParser,
                   nb_mgr: &NotebookManager,
@@ -86,9 +93,9 @@ fn main() {
         let layout = compute_workspace_layout_with_chrome(
             win_w as i32,
             win_h as i32,
-            200,
-            220,
-            2,
+            sb_w,
+            pl_w,
+            3,
             true,
             menu_h,
             status_h,
@@ -154,8 +161,9 @@ fn main() {
             nb_y += 24;
         }
 
-        // C. Splitter 1
-        canvas.fill_rect(layout.splitter_1_rect, theme.border_color);
+        // C. Splitter 1 (Draggable)
+        let s1_color = if active_drag == Some(1) { 0xFF_00_7A_CC } else { theme.border_color };
+        canvas.fill_rect(layout.splitter_1_rect, s1_color);
 
         // D. Page List (Notes in Active Notebook)
         let pl_bg = if focus == ActiveFocus::PageList { 0xFF_21_25_2B } else { theme.bg_page_list };
@@ -189,8 +197,9 @@ fn main() {
             pg_y += 24;
         }
 
-        // E. Splitter 2
-        canvas.fill_rect(layout.splitter_2_rect, theme.border_color);
+        // E. Splitter 2 (Draggable)
+        let s2_color = if active_drag == Some(2) { 0xFF_00_7A_CC } else { theme.border_color };
+        canvas.fill_rect(layout.splitter_2_rect, s2_color);
 
         // F. Editor Pane
         let ed_bg = if focus == ActiveFocus::Editor { 0xFF_28_2C_34 } else { 0xFF_21_25_2B };
@@ -252,6 +261,10 @@ fn main() {
             canvas.fill_rect(Rect::new(text_x, ed_y, 2, 16), 0xFF_52_8B_FF);
         }
 
+        // Splitter 3 (Between Editor and Preview)
+        let s3_color = if active_drag == Some(3) { 0xFF_00_7A_CC } else { theme.border_color };
+        canvas.fill_rect(layout.splitter_3_rect, s3_color);
+
         // G. Preview Pane
         canvas.fill_rect(layout.preview_rect, 0xFF_1E_22_27);
         parser.parse_full(&doc_bytes);
@@ -277,7 +290,7 @@ fn main() {
         canvas.draw_text(&status_text, 8, layout.status_bar_rect.y + 4, 0xFF_FF_FF_FF);
     };
 
-    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+    redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
     let _ = win.present_framebuffer(&fb, width, height);
 
     println!("Lekhni native desktop window is live!");
@@ -313,20 +326,20 @@ fn main() {
                     cursor_pos -= 1;
                     buffer.delete(cursor_pos, 1);
                     status_msg = "Edited".into();
-                    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                    redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                     let _ = win.present_framebuffer(&fb, width, height);
                 }
             } else if ch == b'\n' || ch == b'\r' {
                 buffer.insert(cursor_pos, b"\n");
                 cursor_pos += 1;
                 status_msg = "Edited".into();
-                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                 let _ = win.present_framebuffer(&fb, width, height);
             } else if (32..127).contains(&ch) {
                 buffer.insert(cursor_pos, &[ch]);
                 cursor_pos += 1;
                 status_msg = "Edited".into();
-                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                 let _ = win.present_framebuffer(&fb, width, height);
             }
         }
@@ -348,7 +361,28 @@ fn main() {
                             height = new_h;
                             fb.resize((width as usize) * (height as usize), theme.bg_workspace);
                             status_msg = format!("Resized to {}x{}", width, height);
-                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            let _ = win.present_framebuffer(&fb, width, height);
+                        }
+                    }
+                    // MotionNotify event (opcode 6): Splitter drag tracking!
+                    6 => {
+                        if let Some(dragged) = dragging_splitter {
+                            let mouse_x = i16::from_le_bytes([event[24], event[25]]) as i32;
+                            if dragged == 1 {
+                                sidebar_w = mouse_x.clamp(100, (width as i32) / 3);
+                            } else if dragged == 2 {
+                                page_list_w = (mouse_x - sidebar_w).clamp(100, (width as i32) / 3);
+                            }
+                            redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            let _ = win.present_framebuffer(&fb, width, height);
+                        }
+                    }
+                    // ButtonRelease event (opcode 5): Release splitter drag!
+                    5 => {
+                        if dragging_splitter.is_some() {
+                            dragging_splitter = None;
+                            redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                             let _ = win.present_framebuffer(&fb, width, height);
                         }
                     }
@@ -361,17 +395,23 @@ fn main() {
                         let layout = compute_workspace_layout_with_chrome(
                             width as i32,
                             height as i32,
-                            200,
-                            220,
-                            2,
+                            sidebar_w,
+                            page_list_w,
+                            3,
                             true,
                             28,
                             24,
                         );
 
                         if button == 1 {
-                            // Left click: hit-testing
-                            if mouse_y < 28 {
+                            // Hit-test splitters for dragging
+                            if (mouse_x - layout.splitter_1_rect.x).abs() <= 5 {
+                                dragging_splitter = Some(1);
+                                status_msg = "Dragging Sidebar Splitter".into();
+                            } else if (mouse_x - layout.splitter_2_rect.x).abs() <= 5 {
+                                dragging_splitter = Some(2);
+                                status_msg = "Dragging Page List Splitter".into();
+                            } else if mouse_y < 28 {
                                 // Click in top header pills
                                 if (80..190).contains(&mouse_x) {
                                     focus = ActiveFocus::Sidebar;
@@ -408,17 +448,17 @@ fn main() {
                                 focus = ActiveFocus::Editor;
                                 status_msg = "Focused Editor".into();
                             }
-                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                             let _ = win.present_framebuffer(&fb, width, height);
                         } else if button == 4 {
                             // Scroll wheel UP
                             scroll_y = (scroll_y - 24).max(0);
-                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                             let _ = win.present_framebuffer(&fb, width, height);
                         } else if button == 5 {
                             // Scroll wheel DOWN
                             scroll_y += 24;
-                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                             let _ = win.present_framebuffer(&fb, width, height);
                         }
                     }
@@ -459,7 +499,7 @@ fn main() {
                                 ActiveFocus::Editor => ActiveFocus::Sidebar,
                             };
                             status_msg = format!("Focused: {:?}", focus);
-                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                             let _ = win.present_framebuffer(&fb, width, height);
                             continue;
                         }
@@ -478,7 +518,7 @@ fn main() {
                                         status_msg = format!("Save error: {}", e);
                                     }
                                 }
-                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                                 continue;
                             } else if keycode == 57 {
@@ -488,7 +528,7 @@ fn main() {
                                 buffer = PieceTable::new(&doc_memory);
                                 cursor_pos = buffer.len();
                                 status_msg = format!("Created & opened unique notebook '{}'", new_name);
-                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                                 continue;
                             } else if keycode == 33 {
@@ -499,7 +539,7 @@ fn main() {
                                 buffer = PieceTable::new(&doc_memory);
                                 cursor_pos = buffer.len();
                                 status_msg = format!("Created & opened page '{}'", new_page_name);
-                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                                 continue;
                             }
@@ -533,7 +573,7 @@ fn main() {
                                     focus = ActiveFocus::Editor;
                                     status_msg = "Focused Editor".into();
                                 }
-                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                             }
                             ActiveFocus::PageList => {
@@ -560,7 +600,7 @@ fn main() {
                                     focus = ActiveFocus::Editor;
                                     status_msg = "Focused Editor".into();
                                 }
-                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                             }
                             ActiveFocus::Editor => {
@@ -570,7 +610,7 @@ fn main() {
                                         cursor_pos -= 1;
                                         buffer.delete(cursor_pos, 1);
                                         status_msg = "Edited".into();
-                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                        redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 119 {
@@ -578,21 +618,21 @@ fn main() {
                                     if cursor_pos < buffer.len() {
                                         buffer.delete(cursor_pos, 1);
                                         status_msg = "Edited".into();
-                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                        redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 113 {
                                     // Left arrow
                                     if cursor_pos > 0 {
                                         cursor_pos -= 1;
-                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                        redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 114 {
                                     // Right arrow
                                     if cursor_pos < buffer.len() {
                                         cursor_pos += 1;
-                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                        redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 36 || keycode == 104 {
@@ -600,13 +640,13 @@ fn main() {
                                     buffer.insert(cursor_pos, b"\n");
                                     cursor_pos += 1;
                                     status_msg = "Edited".into();
-                                    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                    redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                     let _ = win.present_framebuffer(&fb, width, height);
                                 } else if let Some(ch) = keycode_to_char(keycode, shift) {
                                     buffer.insert(cursor_pos, &[ch as u8]);
                                     cursor_pos += 1;
                                     status_msg = "Edited".into();
-                                    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                                    redraw(&mut fb, width, height, sidebar_w, page_list_w, dragging_splitter, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                     let _ = win.present_framebuffer(&fb, width, height);
                                 }
                             }

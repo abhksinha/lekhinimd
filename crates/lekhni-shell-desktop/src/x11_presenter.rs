@@ -87,8 +87,8 @@ impl X11Window {
         // Value mask: CWBackPixel (0x02) | CWEventMask (0x800) = 0x802
         create_win.extend_from_slice(&0x802u32.to_le_bytes());
         create_win.extend_from_slice(&0xFF_1E_1E_1Eu32.to_le_bytes()); // Background color
-        // Event mask: KeyPress (0x01) | ButtonPress (0x04) | ButtonRelease (0x08) | Exposure (0x8000) | StructureNotify (0x20000)
-        create_win.extend_from_slice(&0x2800Du32.to_le_bytes());
+        // Event mask: KeyPress (0x01) | ButtonPress (0x04) | ButtonRelease (0x08) | PointerMotion (0x40) | Exposure (0x8000) | StructureNotify (0x20000)
+        create_win.extend_from_slice(&0x2804Du32.to_le_bytes());
 
         stream.write_all(&create_win).map_err(|e| e.to_string())?;
 

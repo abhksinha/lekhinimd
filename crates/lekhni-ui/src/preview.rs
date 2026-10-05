@@ -95,19 +95,23 @@ impl PreviewRenderer {
                         if let Some(rest) = clean_text.strip_prefix("- [ ] ") {
                             canvas.fill_rect(Rect::new(origin_x + 20, curr_y + 4, 12, 12), 0xFF_3E_44_51);
                             canvas.fill_rect(Rect::new(origin_x + 21, curr_y + 5, 10, 10), 0xFF_28_2C_34);
-                            render_inline_markdown(canvas, rest, origin_x + 38, curr_y + 3, 0xFF_AB_B2_BF);
+                            let max_c = ((viewport_w - 70) / 8).max(10) as usize;
+                            wrap_and_render_inline(canvas, rest, origin_x + 38, &mut curr_y, max_c, 0xFF_AB_B2_BF);
                         } else if let Some(rest) = clean_text.strip_prefix("- [x] ") {
                             canvas.fill_rect(Rect::new(origin_x + 20, curr_y + 4, 12, 12), 0xFF_98_C3_79);
                             canvas.draw_text("v", origin_x + 22, curr_y + 3, 0xFF_1E_1E_1E);
-                            render_inline_markdown(canvas, rest, origin_x + 38, curr_y + 3, 0xFF_98_C3_79);
+                            let max_c = ((viewport_w - 70) / 8).max(10) as usize;
+                            wrap_and_render_inline(canvas, rest, origin_x + 38, &mut curr_y, max_c, 0xFF_98_C3_79);
                         } else {
                             canvas.draw_char('*', origin_x + 20, curr_y + 3, 0xFF_61_AF_EF);
                             let rest = clean_text.trim_start_matches(&['*', '-'][..]).trim_start();
-                            render_inline_markdown(canvas, rest, origin_x + 32, curr_y + 3, 0xFF_D4_D4_D4);
+                            let max_c = ((viewport_w - 60) / 8).max(10) as usize;
+                            wrap_and_render_inline(canvas, rest, origin_x + 32, &mut curr_y, max_c, 0xFF_D4_D4_D4);
                         }
                     }
                     _ => {
-                        render_inline_markdown(canvas, clean_text, origin_x + 20, curr_y + 3, 0xFF_D4_D4_D4);
+                        let max_c = ((viewport_w - 50) / 8).max(10) as usize;
+                        wrap_and_render_inline(canvas, clean_text, origin_x + 20, &mut curr_y, max_c, 0xFF_D4_D4_D4);
                     }
                 }
             }
@@ -120,6 +124,43 @@ impl PreviewRenderer {
         }
     }
 }
+
+/// Wraps text to multiple lines when exceeding max_chars and renders each line with inline markdown.
+fn wrap_and_render_inline(
+    canvas: &mut Canvas,
+    text: &str,
+    x: i32,
+    curr_y: &mut i32,
+    max_chars: usize,
+    default_color: u32,
+) {
+    if text.is_empty() {
+        return;
+    }
+    let mut start = 0;
+    while start < text.len() {
+        let remaining = &text[start..];
+        if remaining.len() <= max_chars {
+            render_inline_markdown(canvas, remaining, x, *curr_y, default_color);
+            break;
+        }
+
+        // Find last space before max_chars
+        let candidate = &remaining[..max_chars];
+        let split_at = match candidate.rfind(' ') {
+            Some(idx) if idx > 0 => idx,
+            _ => max_chars,
+        };
+
+        render_inline_markdown(canvas, &remaining[..split_at], x, *curr_y, default_color);
+        *curr_y += 18;
+        start += split_at;
+        while start < text.len() && text.as_bytes()[start] == b' ' {
+            start += 1;
+        }
+    }
+}
+
 
 /// Renders an inline markdown string with formatting (bold, italic, inline code, and links).
 fn render_inline_markdown(canvas: &mut Canvas, line: &str, mut x: i32, y: i32, default_color: u32) {
