@@ -5,6 +5,8 @@
 
 pub mod a11y_bridge;
 pub mod gpu_presenter;
+#[cfg(target_os = "linux")]
+pub mod x11_presenter;
 use lekhni_md::parser::MarkdownParser;
 use lekhni_raster::canvas::Canvas;
 use lekhni_raster::damage::Rect;
