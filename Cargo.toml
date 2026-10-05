@@ -14,6 +14,7 @@ members = [
     "crates/lekhni-shell-web",
     "crates/lekhni-shell-android",
     "crates/lekhni-shell-ios",
+    "bench/lekhni-bench",
 ]
 
 [workspace.package]

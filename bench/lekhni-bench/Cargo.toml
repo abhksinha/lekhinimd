@@ -1,0 +1,17 @@
+[package]
+name = "lekhni-bench"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lekhni-base = { path = "../../crates/lekhni-base" }
+lekhni-text = { path = "../../crates/lekhni-text" }
+lekhni-md = { path = "../../crates/lekhni-md" }
+lekhni-raster = { path = "../../crates/lekhni-raster" }
+lekhni-shell = { path = "../../crates/lekhni-shell" }
+lekhni-shell-desktop = { path = "../../crates/lekhni-shell-desktop" }
+lekhni-index = { path = "../../crates/lekhni-index" }
+lekhni-ui = { path = "../../crates/lekhni-ui" }

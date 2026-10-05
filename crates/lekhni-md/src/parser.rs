@@ -42,6 +42,11 @@ impl MarkdownParser {
         if let Some(cp) = self.checkpoints.find_checkpoint_for_line(dirty_line) {
             // Roll back blocks and checkpoints after this checkpoint
             self.blocks.truncate(cp.block_index);
+            if let Some(last_end) = self.blocks.end.last_mut() {
+                if *last_end > cp.byte_offset as u32 {
+                    *last_end = cp.byte_offset as u32;
+                }
+            }
             self.checkpoints.truncate_from_line(cp.line + 1);
             self.parse_range(text, cp.line, cp.byte_offset, cp.state);
         } else {
@@ -76,12 +81,15 @@ impl MarkdownParser {
 
             // Periodically record checkpoints
             if line_num > 0 && line_num % self.checkpoints.interval_lines == 0 {
-                self.checkpoints.push(Checkpoint {
-                    line: line_num,
-                    byte_offset: offset,
-                    block_index: self.blocks.len(),
-                    state,
-                });
+                let already_recorded = self.checkpoints.checkpoints.last().map(|c| c.line) == Some(line_num);
+                if !already_recorded {
+                    self.checkpoints.push(Checkpoint {
+                        line: line_num,
+                        byte_offset: offset,
+                        block_index: self.blocks.len(),
+                        state,
+                    });
+                }
             }
 
             // Parse line according to current parser state
