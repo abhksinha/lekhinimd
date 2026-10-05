@@ -7,12 +7,44 @@
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum KeyAction {
+    Char(char),
+    Backspace,
+    Delete,
+    Return,
+    Tab,
+    Escape,
+    Left { shift: bool, ctrl: bool },
+    Right { shift: bool, ctrl: bool },
+    Up { shift: bool },
+    Down { shift: bool },
+    Home { shift: bool },
+    End { shift: bool },
+    PageUp,
+    PageDown,
+    Undo,
+    Redo,
+    Cut,
+    Copy,
+    Paste,
+    Save,
+    SelectAll,
+    NewNotebook,
+    NewPage,
+    None,
+}
+
 pub struct X11Window {
     stream: UnixStream,
     pub window_id: u32,
     pub gc_id: u32,
     pub width: u16,
     pub height: u16,
+    pub min_keycode: u8,
+    pub max_keycode: u8,
+    pub keysyms_per_keycode: u8,
+    pub keysyms: Vec<u32>,
 }
 
 impl X11Window {
@@ -151,13 +183,131 @@ impl X11Window {
         stream.write_all(&focus_req).map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
 
+        let min_keycode = reply_body[26];
+        let max_keycode = reply_body[27];
+
+        // Query X11 keyboard mapping (Opcode 101: GetKeyboardMapping)
+        let count = max_keycode.saturating_sub(min_keycode) + 1;
+        let mut keymap_req = Vec::with_capacity(8);
+        keymap_req.push(101u8); // GetKeyboardMapping opcode
+        keymap_req.push(0);
+        keymap_req.extend_from_slice(&2u16.to_le_bytes()); // 2 * 4 = 8 bytes
+        keymap_req.push(min_keycode);
+        keymap_req.push(count);
+        keymap_req.extend_from_slice(&[0, 0]);
+
+        stream.write_all(&keymap_req).map_err(|e| e.to_string())?;
+        stream.flush().map_err(|e| e.to_string())?;
+
+        let mut km_hdr = [0u8; 32];
+        stream.read_exact(&mut km_hdr).map_err(|e| e.to_string())?;
+        let keysyms_per_keycode = km_hdr[1];
+        let km_words = u32::from_le_bytes(km_hdr[4..8].try_into().unwrap()) as usize;
+        let mut km_bytes = vec![0u8; km_words * 4];
+        stream.read_exact(&mut km_bytes).map_err(|e| e.to_string())?;
+
+        let mut keysyms = Vec::with_capacity(km_bytes.len() / 4);
+        for chunk in km_bytes.chunks_exact(4) {
+            keysyms.push(u32::from_le_bytes(chunk.try_into().unwrap()));
+        }
+
         Ok(Self {
             stream,
             window_id,
             gc_id,
             width,
             height,
+            min_keycode,
+            max_keycode,
+            keysyms_per_keycode,
+            keysyms,
         })
+    }
+
+    /// Translates raw X11 keycode and modifier state into a typed Unicode char or editor navigation action.
+    pub fn translate_key(&self, keycode: u8, state: u16) -> KeyAction {
+        if keycode < self.min_keycode || keycode > self.max_keycode || self.keysyms_per_keycode == 0 {
+            return KeyAction::None;
+        }
+
+        let shift = (state & 0x0001) != 0;
+        let lock = (state & 0x0002) != 0;
+        let ctrl = (state & 0x0004) != 0;
+
+        let base_idx = (keycode - self.min_keycode) as usize * self.keysyms_per_keycode as usize;
+        let ks_unmod = self.keysyms.get(base_idx).copied().unwrap_or(0);
+        let ks_shift = if self.keysyms_per_keycode > 1 && self.keysyms.get(base_idx + 1).copied().unwrap_or(0) != 0 {
+            self.keysyms[base_idx + 1]
+        } else if (0x61..=0x7A).contains(&ks_unmod) {
+            ks_unmod - 0x20
+        } else {
+            ks_unmod
+        };
+
+        // Determine active keysym based on shift modifier
+        let ks = if shift { ks_shift } else { ks_unmod };
+
+        // Handle Control shortcuts (Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+S, Ctrl+A, Ctrl+N, Ctrl+P)
+        if ctrl {
+            let base_char = match ks_unmod {
+                0x0041..=0x005A => char::from_u32(ks_unmod + 32),
+                0x0061..=0x007A => char::from_u32(ks_unmod),
+                _ => None,
+            };
+            if let Some(c) = base_char {
+                match c {
+                    'z' => return if shift { KeyAction::Redo } else { KeyAction::Undo },
+                    'y' => return KeyAction::Redo,
+                    'c' => return KeyAction::Copy,
+                    'x' => return KeyAction::Cut,
+                    'v' => return KeyAction::Paste,
+                    's' => return KeyAction::Save,
+                    'a' => return KeyAction::SelectAll,
+                    'n' => return KeyAction::NewNotebook,
+                    'p' => return KeyAction::NewPage,
+                    _ => {}
+                }
+            }
+        }
+
+        // Standard X11 keysym dispatch
+        match ks {
+            0xFF08 => KeyAction::Backspace,
+            0xFF09 => KeyAction::Tab,
+            0xFF0D | 0xFF8D => KeyAction::Return,
+            0xFF1B => KeyAction::Escape,
+            0xFFFF => KeyAction::Delete,
+            0xFF50 | 0xFF95 => KeyAction::Home { shift },
+            0xFF51 | 0xFF96 => KeyAction::Left { shift, ctrl },
+            0xFF52 | 0xFF97 => KeyAction::Up { shift },
+            0xFF53 | 0xFF98 => KeyAction::Right { shift, ctrl },
+            0xFF54 | 0xFF99 => KeyAction::Down { shift },
+            0xFF55 | 0xFF9A => KeyAction::PageUp,
+            0xFF56 | 0xFF9B => KeyAction::PageDown,
+            0xFF57 | 0xFF9C => KeyAction::End { shift },
+            // Latin-1 / ASCII printable range
+            0x0020..=0x007E | 0x00A0..=0x00FF => {
+                let mut ch = char::from_u32(ks).unwrap_or(' ');
+                if lock && ch.is_ascii_lowercase() {
+                    ch = ch.to_ascii_uppercase();
+                }
+                KeyAction::Char(ch)
+            }
+            // Direct Unicode keysyms (ISO 10646 standard: 0x01000000..=0x0110FFFF)
+            0x01000000..=0x0110FFFF => {
+                if let Some(ch) = char::from_u32(ks - 0x01000000) {
+                    KeyAction::Char(ch)
+                } else {
+                    KeyAction::None
+                }
+            }
+            // Keypad numbers (0xFFB0..=0xFFB9)
+            0xFFB0..=0xFFB9 => {
+                let digit = (ks - 0xFFB0) as u8;
+                KeyAction::Char((b'0' + digit) as char)
+            }
+            _ => KeyAction::None,
+        }
     }
 
     /// Blits 32-bit ARGB/XRGB pixels into the X11 window.
@@ -202,9 +352,22 @@ impl X11Window {
     /// Reads the next X11 event packet (blocking with zero CPU idle usage).
     pub fn wait_event(&mut self) -> Result<[u8; 32], std::io::Error> {
         self.stream.set_nonblocking(false)?;
+        self.stream.set_read_timeout(None)?;
         let mut event_buf = [0u8; 32];
         self.stream.read_exact(&mut event_buf)?;
         Ok(event_buf)
+    }
+
+    /// Waits for the next X11 event packet with a timeout (for autosave and timers).
+    pub fn wait_event_timeout(&mut self, timeout: std::time::Duration) -> Result<Option<[u8; 32]>, std::io::Error> {
+        self.stream.set_nonblocking(false)?;
+        self.stream.set_read_timeout(Some(timeout))?;
+        let mut event_buf = [0u8; 32];
+        match self.stream.read_exact(&mut event_buf) {
+            Ok(_) => Ok(Some(event_buf)),
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 
     /// Polls for incoming X11 event packets (non-blocking).

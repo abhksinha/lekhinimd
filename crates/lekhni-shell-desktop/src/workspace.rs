@@ -22,6 +22,9 @@ impl Fs for StdFs {
     }
 
     fn write_atomic(&self, path: &str, data: &[u8]) -> Result<(), Self::Error> {
+        if let Some(parent) = Path::new(path).parent() {
+            fs::create_dir_all(parent)?;
+        }
         fs::write(path, data)
     }
 
@@ -249,6 +252,12 @@ impl NotebookManager {
             self.active_page_idx = pos;
         }
         Some(clean)
+    }
+
+    /// Gets the current active notebook directory path.
+    pub fn active_notebook_dir(&self) -> Option<PathBuf> {
+        let nb_name = self.notebooks.get(self.active_notebook_idx)?;
+        Some(self.working_dir.join(nb_name))
     }
 
     /// Gets the current active page file path.
