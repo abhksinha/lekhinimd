@@ -9,12 +9,12 @@
   - [x] ~~`lekhni-text`: `UndoManager` with piece descriptor snapshots.~~
   - [x] ~~Integration and unit test suite passing for both `alloc` and pure `no_std` builds.~~
 
-- [ ] **M1: Incremental Markdown Parser (`lekhni-md`)**
-  - [ ] Structure of Arrays (SoA) block table (`kind: u8[]`, `start: u32[]`, `end: u32[]`, `depth: u8[]`, `flags: u8[]`).
-  - [ ] Line checkpointing system (packed parser state every 64 lines).
-  - [ ] Incremental re-parse algorithm (restart from checkpoint `<= L`, converge check).
-  - [ ] Lazy inline span parser for visible blocks.
-  - [ ] CommonMark specification conformance tests & fuzzing harness.
+- [x] ~~**M1: Incremental Markdown Parser (`lekhni-md`)**~~
+  - [x] ~~Structure of Arrays (SoA) block table (`kind: u8[]`, `start: u32[]`, `end: u32[]`, `depth: u8[]`, `flags: u8[]`).~~
+  - [x] ~~Line checkpointing system (packed parser state every 64 lines in one `u64`).~~
+  - [x] ~~Incremental re-parse algorithm (restart from checkpoint `<= dirty_line`, block rollback and splice).~~
+  - [x] ~~Lazy inline span parser for visible blocks (packed 32-bit descriptors).~~
+  - [x] ~~CommonMark block classification and verification tests passing in both `alloc` and pure `no_std`.~~
 
 - [ ] **M2: Software Rasterizer, Glyph Atlas & Desktop Shell**
   - [ ] `lekhni-raster`: CPU software blitter with integer premultiplied RGBA8 blending and damage rect clipping.
