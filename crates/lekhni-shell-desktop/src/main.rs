@@ -40,8 +40,8 @@ fn main() {
         nb_mgr.pages.len()
     );
 
-    let width = 1100u16;
-    let height = 700u16;
+    let mut width = 1100u16;
+    let mut height = 700u16;
     let theme = Theme::dark();
     let mut fb = vec![theme.bg_workspace; (width as usize) * (height as usize)];
 
@@ -51,6 +51,7 @@ fn main() {
     let mut cursor_pos: usize = buffer.len();
     let mut parser = MarkdownParser::new();
     let mut focus = ActiveFocus::Editor;
+    let mut scroll_y: i32 = 0;
     let mut status_msg = String::from("Ready. Ctrl+S to save, Tab to switch pane, Esc to quit.");
 
     // 3. Open native X11 window
@@ -68,22 +69,25 @@ fn main() {
 
     // 4. Redraw pass
     let redraw = |fb: &mut [u32],
+                  win_w: u16,
+                  win_h: u16,
                   buffer: &PieceTable,
                   parser: &mut MarkdownParser,
                   nb_mgr: &NotebookManager,
                   focus: ActiveFocus,
                   cursor_pos: usize,
+                  scroll_y: i32,
                   status: &str| {
-        let mut canvas = Canvas::new(fb, width as u32, height as u32);
+        let mut canvas = Canvas::new(fb, win_w as u32, win_h as u32);
         canvas.clear(theme.bg_workspace);
 
-        let menu_h = 26;
+        let menu_h = 28;
         let status_h = 24;
         let layout = compute_workspace_layout_with_chrome(
-            width as i32,
-            height as i32,
-            180,
+            win_w as i32,
+            win_h as i32,
             200,
+            220,
             2,
             true,
             menu_h,
@@ -91,93 +95,132 @@ fn main() {
         );
 
         // A. Top Menu Bar
-        canvas.fill_rect(layout.menu_bar_rect, 0xFF_25_25_26);
-        canvas.draw_text("LEKHNI | [Tab] Switch Pane  [Ctrl+N] New NB  [Ctrl+P] New Page  [Ctrl+S] Save  [Esc] Quit", 10, 5, 0xFF_CC_CC_CC);
+        canvas.fill_rect(layout.menu_bar_rect, 0xFF_21_25_2B);
+        canvas.draw_text("LEKHNI", 12, 6, 0xFF_61_AF_EF);
+
+        // Interactive Pane Focus Pills in Header
+        let pill_sidebar = Rect::new(80, 4, 110, 20);
+        let pill_pages = Rect::new(196, 4, 90, 20);
+        let pill_editor = Rect::new(292, 4, 100, 20);
+
+        canvas.fill_rect(pill_sidebar, if focus == ActiveFocus::Sidebar { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("[1] NOTEBOOKS", 86, 6, if focus == ActiveFocus::Sidebar { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.fill_rect(pill_pages, if focus == ActiveFocus::PageList { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("[2] PAGES", 204, 6, if focus == ActiveFocus::PageList { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.fill_rect(pill_editor, if focus == ActiveFocus::Editor { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("[3] EDITOR", 302, 6, if focus == ActiveFocus::Editor { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.draw_text("[Ctrl+N] New NB  [Ctrl+P] New Page  [Ctrl+S] Save", 408, 6, 0xFF_98_C3_79);
+
         let active_nb_name = nb_mgr.notebooks.get(nb_mgr.active_notebook_idx).map(|s| s.as_str()).unwrap_or("None");
         let active_pg_name = nb_mgr.pages.get(nb_mgr.active_page_idx).map(|s| s.as_str()).unwrap_or("None");
-        let right_label = format!("NB: {} | Page: {}", active_nb_name, active_pg_name);
-        let right_x = (width as i32) - (right_label.len() as i32 * 8) - 16;
-        if right_x > 600 {
-            canvas.draw_text(&right_label, right_x, 5, 0xFF_4E_C9_B0);
+        let right_label = format!("{}/{}", active_nb_name, active_pg_name);
+        let right_x = (win_w as i32) - (right_label.len() as i32 * 8) - 16;
+        if right_x > 680 {
+            canvas.draw_text(&right_label, right_x, 6, 0xFF_E5_C0_7B);
         }
 
         // B. Sidebar (Notebooks)
-        let sb_bg = if focus == ActiveFocus::Sidebar { 0xFF_1E_1E_1E } else { theme.bg_sidebar };
+        let sb_bg = if focus == ActiveFocus::Sidebar { 0xFF_1E_22_27 } else { theme.bg_sidebar };
         canvas.fill_rect(layout.sidebar_rect, sb_bg);
-        canvas.draw_text("=== NOTEBOOKS ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_85_85_85);
 
-        let mut nb_y = layout.sidebar_rect.y + 32;
+        // Active Focus Indicator Top Stripe
+        if focus == ActiveFocus::Sidebar {
+            canvas.fill_rect(Rect::new(layout.sidebar_rect.x, layout.sidebar_rect.y, layout.sidebar_rect.width, 3), 0xFF_00_7A_CC);
+            canvas.fill_rect(Rect::new(layout.sidebar_rect.x + 4, layout.sidebar_rect.y + 6, layout.sidebar_rect.width - 8, 20), 0xFF_2D_31_39);
+            canvas.draw_text("=== [ NOTEBOOKS ] ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_61_AF_EF);
+        } else {
+            canvas.draw_text("=== NOTEBOOKS ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_5C_63_70);
+        }
+
+        let mut nb_y = layout.sidebar_rect.y + 34;
         for (i, nb) in nb_mgr.notebooks.iter().enumerate() {
-            if nb_y + 18 > layout.sidebar_rect.bottom() {
+            if nb_y + 20 > layout.sidebar_rect.bottom() {
                 break;
             }
             let is_active = i == nb_mgr.active_notebook_idx;
             if is_active {
                 canvas.fill_rect(
-                    Rect::new(layout.sidebar_rect.x + 4, nb_y - 2, layout.sidebar_rect.width - 8, 20),
-                    if focus == ActiveFocus::Sidebar { 0xFF_09_47_71 } else { 0xFF_2A_2D_2E },
+                    Rect::new(layout.sidebar_rect.x + 4, nb_y - 2, layout.sidebar_rect.width - 8, 22),
+                    if focus == ActiveFocus::Sidebar { 0xFF_09_47_71 } else { 0xFF_2C_31_3C },
                 );
-                canvas.draw_text(&format!("* {}", nb), layout.sidebar_rect.x + 8, nb_y, 0xFF_FF_FF_FF);
+                canvas.fill_rect(Rect::new(layout.sidebar_rect.x + 4, nb_y - 2, 3, 22), 0xFF_00_7A_CC);
+                canvas.draw_text(&format!("* {}", nb), layout.sidebar_rect.x + 10, nb_y, 0xFF_FF_FF_FF);
             } else {
-                canvas.draw_text(&format!("  {}", nb), layout.sidebar_rect.x + 8, nb_y, 0xFF_9D_A5_B4);
+                canvas.draw_text(&format!("  {}", nb), layout.sidebar_rect.x + 10, nb_y, 0xFF_AB_B2_BF);
             }
-            nb_y += 22;
+            nb_y += 24;
         }
 
         // C. Splitter 1
         canvas.fill_rect(layout.splitter_1_rect, theme.border_color);
 
         // D. Page List (Notes in Active Notebook)
-        let pl_bg = if focus == ActiveFocus::PageList { 0xFF_22_22_25 } else { theme.bg_page_list };
+        let pl_bg = if focus == ActiveFocus::PageList { 0xFF_21_25_2B } else { theme.bg_page_list };
         canvas.fill_rect(layout.page_list_rect, pl_bg);
-        canvas.draw_text("=== PAGES ===", layout.page_list_rect.x + 12, layout.page_list_rect.y + 8, 0xFF_85_85_85);
 
-        let mut pg_y = layout.page_list_rect.y + 32;
+        // Active Focus Indicator Top Stripe
+        if focus == ActiveFocus::PageList {
+            canvas.fill_rect(Rect::new(layout.page_list_rect.x, layout.page_list_rect.y, layout.page_list_rect.width, 3), 0xFF_00_7A_CC);
+            canvas.fill_rect(Rect::new(layout.page_list_rect.x + 4, layout.page_list_rect.y + 6, layout.page_list_rect.width - 8, 20), 0xFF_2D_31_39);
+            canvas.draw_text("=== [ PAGES ] ===", layout.page_list_rect.x + 16, layout.page_list_rect.y + 8, 0xFF_61_AF_EF);
+        } else {
+            canvas.draw_text("=== PAGES ===", layout.page_list_rect.x + 16, layout.page_list_rect.y + 8, 0xFF_5C_63_70);
+        }
+
+        let mut pg_y = layout.page_list_rect.y + 34;
         for (i, page) in nb_mgr.pages.iter().enumerate() {
-            if pg_y + 18 > layout.page_list_rect.bottom() {
+            if pg_y + 20 > layout.page_list_rect.bottom() {
                 break;
             }
             let is_active = i == nb_mgr.active_page_idx;
             if is_active {
                 canvas.fill_rect(
-                    Rect::new(layout.page_list_rect.x + 4, pg_y - 2, layout.page_list_rect.width - 8, 20),
-                    if focus == ActiveFocus::PageList { 0xFF_09_47_71 } else { 0xFF_2A_2D_2E },
+                    Rect::new(layout.page_list_rect.x + 4, pg_y - 2, layout.page_list_rect.width - 8, 22),
+                    if focus == ActiveFocus::PageList { 0xFF_09_47_71 } else { 0xFF_2C_31_3C },
                 );
-                canvas.draw_text(&format!("* {}", page), layout.page_list_rect.x + 8, pg_y, 0xFF_FF_FF_FF);
+                canvas.fill_rect(Rect::new(layout.page_list_rect.x + 4, pg_y - 2, 3, 22), 0xFF_00_7A_CC);
+                canvas.draw_text(&format!("* {}", page), layout.page_list_rect.x + 10, pg_y, 0xFF_FF_FF_FF);
             } else {
-                canvas.draw_text(&format!("  {}", page), layout.page_list_rect.x + 8, pg_y, 0xFF_9D_A5_B4);
+                canvas.draw_text(&format!("  {}", page), layout.page_list_rect.x + 10, pg_y, 0xFF_AB_B2_BF);
             }
-            pg_y += 22;
+            pg_y += 24;
         }
 
         // E. Splitter 2
         canvas.fill_rect(layout.splitter_2_rect, theme.border_color);
 
         // F. Editor Pane
-        let ed_bg = if focus == ActiveFocus::Editor { 0xFF_1E_1E_1E } else { 0xFF_18_18_18 };
+        let ed_bg = if focus == ActiveFocus::Editor { 0xFF_28_2C_34 } else { 0xFF_21_25_2B };
         canvas.fill_rect(layout.editor_rect, ed_bg);
+        if focus == ActiveFocus::Editor {
+            canvas.fill_rect(Rect::new(layout.editor_rect.x, layout.editor_rect.y, layout.editor_rect.width, 3), 0xFF_00_7A_CC);
+        }
 
         // Gutter
-        let gutter_w = 40;
+        let gutter_w = 44;
         canvas.fill_rect(
             Rect::new(layout.editor_rect.x, layout.editor_rect.y, gutter_w, layout.editor_rect.height),
-            0xFF_25_25_26,
+            0xFF_21_25_2B,
         );
+        canvas.fill_rect(Rect::new(layout.editor_rect.x + gutter_w - 1, layout.editor_rect.y, 1, layout.editor_rect.height), 0xFF_3E_44_51);
 
         let mut doc_bytes = vec![0u8; buffer.len()];
         buffer.copy_range(0, buffer.len(), &mut doc_bytes);
         let doc_str = String::from_utf8_lossy(&doc_bytes);
 
         let mut line_num = 1;
-        let mut ed_y = layout.editor_rect.y + 8;
+        let mut ed_y = layout.editor_rect.y + 10;
         let mut char_count_acc = 0usize;
 
         for line in doc_str.lines() {
             if ed_y + 18 > layout.editor_rect.bottom() {
                 break;
             }
-            let num_str = format!("{:2}", line_num);
-            canvas.draw_text(&num_str, layout.editor_rect.x + 8, ed_y, 0xFF_6E_76_81);
+            let num_str = format!("{:3}", line_num);
+            canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
 
             let line_len = line.len();
             let line_start = char_count_acc;
@@ -185,14 +228,14 @@ fn main() {
 
             // Draw line text
             let text_x = layout.editor_rect.x + gutter_w + 10;
-            canvas.draw_text(line, text_x, ed_y, 0xFF_D4_D4_D4);
+            canvas.draw_text(line, text_x, ed_y, 0xFF_AB_B2_BF);
 
             // Draw cursor if on this line
             if cursor_pos >= line_start && cursor_pos <= line_end {
                 let col = (cursor_pos - line_start) as i32;
                 let cur_x = text_x + col * 8;
                 if cur_x + 2 < layout.editor_rect.right() {
-                    canvas.fill_rect(Rect::new(cur_x, ed_y, 2, 16), 0xFF_00_7A_CC);
+                    canvas.fill_rect(Rect::new(cur_x, ed_y, 2, 16), 0xFF_52_8B_FF);
                 }
             }
 
@@ -203,14 +246,14 @@ fn main() {
 
         // If buffer ends with newline or is empty, draw cursor on new empty line
         if char_count_acc <= cursor_pos && ed_y + 18 <= layout.editor_rect.bottom() {
-            let num_str = format!("{:2}", line_num);
-            canvas.draw_text(&num_str, layout.editor_rect.x + 8, ed_y, 0xFF_6E_76_81);
+            let num_str = format!("{:3}", line_num);
+            canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
             let text_x = layout.editor_rect.x + gutter_w + 10;
-            canvas.fill_rect(Rect::new(text_x, ed_y, 2, 16), 0xFF_00_7A_CC);
+            canvas.fill_rect(Rect::new(text_x, ed_y, 2, 16), 0xFF_52_8B_FF);
         }
 
         // G. Preview Pane
-        canvas.fill_rect(layout.preview_rect, theme.bg_preview);
+        canvas.fill_rect(layout.preview_rect, 0xFF_1E_22_27);
         parser.parse_full(&doc_bytes);
 
         canvas.clip = layout.preview_rect;
@@ -218,23 +261,23 @@ fn main() {
             &mut canvas,
             &parser.blocks,
             &doc_bytes,
-            0,
+            scroll_y,
             layout.preview_rect.width,
             layout.preview_rect.height,
         );
-        canvas.clip = Rect::new(0, 0, width as i32, height as i32);
+        canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
 
         // H. Status Bar
         canvas.fill_rect(layout.status_bar_rect, 0xFF_00_7A_CC);
         let word_count = doc_str.split_whitespace().count();
         let status_text = format!(
-            " {} | Focus: {:?} | Len: {} bytes, {} words | Latency: <1ms",
-            status, focus, buffer.len(), word_count
+            " {} | Focus: {:?} | Size: {}x{} | Len: {} bytes, {} words | Latency: <1ms",
+            status, focus, win_w, win_h, buffer.len(), word_count
         );
-        canvas.draw_text(&status_text, 6, layout.status_bar_rect.y + 4, 0xFF_FF_FF_FF);
+        canvas.draw_text(&status_text, 8, layout.status_bar_rect.y + 4, 0xFF_FF_FF_FF);
     };
 
-    redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
     let _ = win.present_framebuffer(&fb, width, height);
 
     println!("Lekhni native desktop window is live!");
@@ -263,29 +306,27 @@ fn main() {
         // Check for stdin character if sent from terminal
         if let Ok(ch) = rx_stdin.try_recv() {
             if ch == 27 {
-                // Escape in terminal
                 println!("\nEscape pressed in terminal. Exiting Lekhni.");
                 break;
             } else if ch == 8 || ch == 127 {
-                // Backspace
                 if cursor_pos > 0 && !buffer.is_empty() {
                     cursor_pos -= 1;
                     buffer.delete(cursor_pos, 1);
                     status_msg = "Edited".into();
-                    redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                     let _ = win.present_framebuffer(&fb, width, height);
                 }
             } else if ch == b'\n' || ch == b'\r' {
                 buffer.insert(cursor_pos, b"\n");
                 cursor_pos += 1;
                 status_msg = "Edited".into();
-                redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                 let _ = win.present_framebuffer(&fb, width, height);
             } else if (32..127).contains(&ch) {
                 buffer.insert(cursor_pos, &[ch]);
                 cursor_pos += 1;
                 status_msg = "Edited".into();
-                redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                 let _ = win.present_framebuffer(&fb, width, height);
             }
         }
@@ -297,6 +338,89 @@ fn main() {
                     // Expose event (opcode 12): re-present window framebuffer
                     12 => {
                         let _ = win.present_framebuffer(&fb, width, height);
+                    }
+                    // ConfigureNotify event (opcode 22): window resized or maximized!
+                    22 => {
+                        let new_w = u16::from_le_bytes([event[16], event[17]]);
+                        let new_h = u16::from_le_bytes([event[18], event[19]]);
+                        if (new_w != width || new_h != height) && new_w >= 400 && new_h >= 300 {
+                            width = new_w;
+                            height = new_h;
+                            fb.resize((width as usize) * (height as usize), theme.bg_workspace);
+                            status_msg = format!("Resized to {}x{}", width, height);
+                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            let _ = win.present_framebuffer(&fb, width, height);
+                        }
+                    }
+                    // ButtonPress event (opcode 4): Mouse clicks and scroll wheel!
+                    4 => {
+                        let button = event[1];
+                        let mouse_x = i16::from_le_bytes([event[24], event[25]]) as i32;
+                        let mouse_y = i16::from_le_bytes([event[26], event[27]]) as i32;
+
+                        let layout = compute_workspace_layout_with_chrome(
+                            width as i32,
+                            height as i32,
+                            200,
+                            220,
+                            2,
+                            true,
+                            28,
+                            24,
+                        );
+
+                        if button == 1 {
+                            // Left click: hit-testing
+                            if mouse_y < 28 {
+                                // Click in top header pills
+                                if (80..190).contains(&mouse_x) {
+                                    focus = ActiveFocus::Sidebar;
+                                    status_msg = "Focused Notebooks".into();
+                                } else if (196..286).contains(&mouse_x) {
+                                    focus = ActiveFocus::PageList;
+                                    status_msg = "Focused Pages".into();
+                                } else if (292..392).contains(&mouse_x) {
+                                    focus = ActiveFocus::Editor;
+                                    status_msg = "Focused Editor".into();
+                                }
+                            } else if mouse_x < layout.sidebar_rect.right() {
+                                focus = ActiveFocus::Sidebar;
+                                let clicked_row = (mouse_y - (layout.sidebar_rect.y + 34)) / 24;
+                                if clicked_row >= 0 && (clicked_row as usize) < nb_mgr.notebooks.len() {
+                                    nb_mgr.active_notebook_idx = clicked_row as usize;
+                                    nb_mgr.refresh_pages();
+                                    doc_memory = nb_mgr.load_active_content();
+                                    buffer = PieceTable::new(&doc_memory);
+                                    cursor_pos = buffer.len();
+                                    status_msg = format!("Selected notebook '{}'", nb_mgr.notebooks[nb_mgr.active_notebook_idx]);
+                                }
+                            } else if mouse_x < layout.page_list_rect.right() {
+                                focus = ActiveFocus::PageList;
+                                let clicked_row = (mouse_y - (layout.page_list_rect.y + 34)) / 24;
+                                if clicked_row >= 0 && (clicked_row as usize) < nb_mgr.pages.len() {
+                                    nb_mgr.active_page_idx = clicked_row as usize;
+                                    doc_memory = nb_mgr.load_active_content();
+                                    buffer = PieceTable::new(&doc_memory);
+                                    cursor_pos = buffer.len();
+                                    status_msg = format!("Selected page '{}'", nb_mgr.pages[nb_mgr.active_page_idx]);
+                                }
+                            } else {
+                                focus = ActiveFocus::Editor;
+                                status_msg = "Focused Editor".into();
+                            }
+                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            let _ = win.present_framebuffer(&fb, width, height);
+                        } else if button == 4 {
+                            // Scroll wheel UP
+                            scroll_y = (scroll_y - 24).max(0);
+                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            let _ = win.present_framebuffer(&fb, width, height);
+                        } else if button == 5 {
+                            // Scroll wheel DOWN
+                            scroll_y += 24;
+                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
+                            let _ = win.present_framebuffer(&fb, width, height);
+                        }
                     }
                     // KeyRelease event (opcode 3)
                     3 => {
@@ -335,7 +459,7 @@ fn main() {
                                 ActiveFocus::Editor => ActiveFocus::Sidebar,
                             };
                             status_msg = format!("Focused: {:?}", focus);
-                            redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                            redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                             let _ = win.present_framebuffer(&fb, width, height);
                             continue;
                         }
@@ -354,7 +478,7 @@ fn main() {
                                         status_msg = format!("Save error: {}", e);
                                     }
                                 }
-                                redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                                 continue;
                             } else if keycode == 57 {
@@ -364,7 +488,7 @@ fn main() {
                                 buffer = PieceTable::new(&doc_memory);
                                 cursor_pos = buffer.len();
                                 status_msg = format!("Created & opened unique notebook '{}'", new_name);
-                                redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                                 continue;
                             } else if keycode == 33 {
@@ -375,7 +499,7 @@ fn main() {
                                 buffer = PieceTable::new(&doc_memory);
                                 cursor_pos = buffer.len();
                                 status_msg = format!("Created & opened page '{}'", new_page_name);
-                                redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                                 continue;
                             }
@@ -409,7 +533,7 @@ fn main() {
                                     focus = ActiveFocus::Editor;
                                     status_msg = "Focused Editor".into();
                                 }
-                                redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                             }
                             ActiveFocus::PageList => {
@@ -436,7 +560,7 @@ fn main() {
                                     focus = ActiveFocus::Editor;
                                     status_msg = "Focused Editor".into();
                                 }
-                                redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                 let _ = win.present_framebuffer(&fb, width, height);
                             }
                             ActiveFocus::Editor => {
@@ -446,7 +570,7 @@ fn main() {
                                         cursor_pos -= 1;
                                         buffer.delete(cursor_pos, 1);
                                         status_msg = "Edited".into();
-                                        redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 119 {
@@ -454,21 +578,21 @@ fn main() {
                                     if cursor_pos < buffer.len() {
                                         buffer.delete(cursor_pos, 1);
                                         status_msg = "Edited".into();
-                                        redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 113 {
                                     // Left arrow
                                     if cursor_pos > 0 {
                                         cursor_pos -= 1;
-                                        redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 114 {
                                     // Right arrow
                                     if cursor_pos < buffer.len() {
                                         cursor_pos += 1;
-                                        redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                        redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                         let _ = win.present_framebuffer(&fb, width, height);
                                     }
                                 } else if keycode == 36 || keycode == 104 {
@@ -476,13 +600,13 @@ fn main() {
                                     buffer.insert(cursor_pos, b"\n");
                                     cursor_pos += 1;
                                     status_msg = "Edited".into();
-                                    redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                     let _ = win.present_framebuffer(&fb, width, height);
                                 } else if let Some(ch) = keycode_to_char(keycode, shift) {
                                     buffer.insert(cursor_pos, &[ch as u8]);
                                     cursor_pos += 1;
                                     status_msg = "Edited".into();
-                                    redraw(&mut fb, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &status_msg);
+                                    redraw(&mut fb, width, height, &buffer, &mut parser, &nb_mgr, focus, cursor_pos, scroll_y, &status_msg);
                                     let _ = win.present_framebuffer(&fb, width, height);
                                 }
                             }

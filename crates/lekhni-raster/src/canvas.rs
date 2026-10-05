@@ -120,5 +120,55 @@ impl<'a> Canvas<'a> {
             x += FONT_WIDTH;
         }
     }
+
+    /// Draws a single ASCII character scaled by an integer factor (e.g. 2 for 16x32 headings).
+    pub fn draw_char_scaled(&mut self, c: char, x: i32, y: i32, color: u32, scale: u32) {
+        if scale <= 1 {
+            self.draw_char(c, x, y, color);
+            return;
+        }
+        let code = c as u32;
+        if !(32..=127).contains(&code) {
+            return;
+        }
+        let glyph_idx = (code - 32) as usize;
+        let glyph_rows = &FONT_8X16[glyph_idx];
+        let s = scale as i32;
+
+        for (row, &byte) in glyph_rows.iter().enumerate() {
+            let base_y = y + (row as i32) * s;
+            for col in 0..8i32 {
+                if (byte & (0x80 >> col)) != 0 {
+                    let base_x = x + col * s;
+                    for dy in 0..s {
+                        let py = base_y + dy;
+                        if py < self.clip.y || py >= self.clip.bottom() {
+                            continue;
+                        }
+                        for dx in 0..s {
+                            let px = base_x + dx;
+                            if px >= self.clip.x && px < self.clip.right() {
+                                let idx = (py as usize) * (self.width as usize) + (px as usize);
+                                self.buffer[idx] = blend_pixel_premul(color, self.buffer[idx]);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draws text scaled by an integer factor.
+    pub fn draw_text_scaled(&mut self, text: &str, mut x: i32, y: i32, color: u32, scale: u32) {
+        let adv = FONT_WIDTH * (scale.max(1) as i32);
+        for c in text.chars() {
+            if c == '\n' {
+                break;
+            }
+            self.draw_char_scaled(c, x, y, color, scale);
+            x += adv;
+        }
+    }
 }
+
 
