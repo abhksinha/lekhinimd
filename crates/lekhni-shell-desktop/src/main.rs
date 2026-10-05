@@ -8,7 +8,7 @@ use std::thread;
 use std::io::Read;
 use std::time::{Duration, Instant};
 
-use lekhni_layout::compute_workspace_layout_with_chrome;
+use lekhni_layout::{compute_workspace_layout_with_mode, WorkspaceMode};
 use lekhni_md::parser::MarkdownParser;
 use lekhni_raster::canvas::Canvas;
 use lekhni_raster::damage::Rect;
@@ -17,7 +17,7 @@ use lekhni_shell_desktop::x11_presenter::{KeyAction, X11Window};
 use lekhni_text::buffer::PieceTable;
 use lekhni_text::cursor::{Cursor, Selection};
 use lekhni_text::undo::UndoManager;
-use lekhni_ui::preview::PreviewRenderer;
+use lekhni_ui::preview::{ClickableTarget, PreviewRenderer};
 use lekhni_ui::selection::SelectionHandler;
 use lekhni_ui::theme::Theme;
 use lekhni_store::recovery::RecoveryJournal;
@@ -159,6 +159,120 @@ fn find_line_end(buffer: &PieceTable, offset: usize) -> usize {
     curr
 }
 
+/// Renders a single line of Markdown source with syntax highlighting in the editor pane.
+fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x: i32, y: i32) {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("# ") {
+        let prefix_len = line.len() - trimmed.len() + 2;
+        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E0_6C_75);
+        x += (prefix_len as i32) * 8;
+        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_61_AF_EF);
+        canvas.draw_text(&line[prefix_len..], x + 1, y, 0xFF_61_AF_EF); // bold
+        return;
+    } else if trimmed.starts_with("## ") {
+        let prefix_len = line.len() - trimmed.len() + 3;
+        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E0_6C_75);
+        x += (prefix_len as i32) * 8;
+        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_61_AF_EF);
+        return;
+    } else if trimmed.starts_with("### ") {
+        let prefix_len = line.len() - trimmed.len() + 4;
+        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E0_6C_75);
+        x += (prefix_len as i32) * 8;
+        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_4E_C9_B0);
+        return;
+    } else if trimmed.starts_with("> ") {
+        let prefix_len = line.len() - trimmed.len() + 2;
+        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_00_7A_CC);
+        x += (prefix_len as i32) * 8;
+        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_9C_DC_FE);
+        return;
+    } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+        canvas.draw_text(line, x, y, 0xFF_E5_C0_7B);
+        return;
+    } else if trimmed.starts_with("- [ ] ") {
+        let prefix_len = line.len() - trimmed.len() + 6;
+        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E5_C0_7B);
+        x += (prefix_len as i32) * 8;
+        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_AB_B2_BF);
+        return;
+    } else if trimmed.starts_with("- [x] ") {
+        let prefix_len = line.len() - trimmed.len() + 6;
+        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_98_C3_79);
+        x += (prefix_len as i32) * 8;
+        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_98_C3_79);
+        return;
+    } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
+        let prefix_len = line.len() - trimmed.len() + 2;
+        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_61_AF_EF);
+        x += (prefix_len as i32) * 8;
+        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_AB_B2_BF);
+        return;
+    } else if trimmed.starts_with('|') && trimmed.ends_with('|') {
+        // Table row syntax highlighting
+        for ch in line.chars() {
+            let color = if ch == '|' { 0xFF_5C_63_70 } else { 0xFF_AB_B2_BF };
+            canvas.draw_char(ch, x, y, color);
+            x += 8;
+        }
+        return;
+    }
+
+    // Regular line inline spans syntax highlighting
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
+            if let Some(end) = line[i + 2..].find("**") {
+                let bold_full = &line[i..i + 4 + end];
+                canvas.draw_text(bold_full, x, y, 0xFF_FF_FF_FF);
+                canvas.draw_text(bold_full, x + 1, y, 0xFF_FF_FF_FF);
+                x += (bold_full.len() as i32) * 8;
+                i += 4 + end;
+                continue;
+            }
+        }
+        if i + 1 < bytes.len() && bytes[i] == b'~' && bytes[i + 1] == b'~' {
+            if let Some(end) = line[i + 2..].find("~~") {
+                let strike_full = &line[i..i + 4 + end];
+                canvas.draw_text(strike_full, x, y, 0xFF_7F_84_8E);
+                x += (strike_full.len() as i32) * 8;
+                i += 4 + end;
+                continue;
+            }
+        }
+        if bytes[i] == b'`' {
+            if let Some(end) = line[i + 1..].find('`') {
+                let code_full = &line[i..i + 2 + end];
+                canvas.draw_text(code_full, x, y, 0xFF_E0_6C_75);
+                x += (code_full.len() as i32) * 8;
+                i += 2 + end;
+                continue;
+            }
+        }
+        if bytes[i] == b'[' {
+            if let Some(close_b) = line[i + 1..].find(']') {
+                let rest = &line[i + 1 + close_b + 1..];
+                if rest.starts_with('(') {
+                    if let Some(close_p) = rest.find(')') {
+                        let total_len = 1 + close_b + 1 + 1 + close_p + 1;
+                        let link_full = &line[i..i + total_len];
+                        canvas.draw_text(link_full, x, y, 0xFF_61_AF_EF);
+                        x += (link_full.len() as i32) * 8;
+                        i += total_len;
+                        continue;
+                    }
+                }
+            }
+        }
+
+        let ch = line[i..].chars().next().unwrap_or(' ');
+        canvas.draw_char(ch, x, y, 0xFF_AB_B2_BF);
+        x += 8;
+        i += ch.len_utf8();
+    }
+}
+
 fn main() {
     println!("=== Launching Lekhni Pure Rust Native Editor ===");
 
@@ -181,6 +295,7 @@ fn main() {
     let mut page_list_w = 210i32;
     let mut dragging_splitter: Option<usize> = None;
     let mut dragging_selection = false;
+    let mut view_mode = WorkspaceMode::Split;
 
     let theme = Theme::dark();
     let mut fb = vec![theme.bg_workspace; (width as usize) * (height as usize)];
@@ -198,7 +313,7 @@ fn main() {
     let mut scroll_y: i32 = 0;
     let mut is_dirty = false;
     let mut last_edit_time = Instant::now();
-    let mut status_msg = String::from("Ready. Full Unicode X11 keyboard active. Ctrl+S to save.");
+    let mut status_msg = String::from("Ready. Phase 2 live: rich markdown, interactive links/tasks, split lock.");
 
     // Check for existing crash recovery journal on startup
     if let (Some(nb_path), Some(page_name)) = (nb_mgr.active_notebook_dir(), nb_mgr.pages.get(nb_mgr.active_page_idx)) {
@@ -231,33 +346,34 @@ fn main() {
 
     // 4. Redraw pass
     let redraw = |fb: &mut [u32],
-                  win_w: u16,
-                  win_h: u16,
-                  sb_w: i32,
-                  pl_w: i32,
-                  active_drag: Option<usize>,
-                  buffer: &PieceTable,
-                  parser: &mut MarkdownParser,
-                  nb_mgr: &NotebookManager,
-                  focus: ActiveFocus,
-                  cursor_pos: usize,
-                  selection: &Selection,
-                  editor_scroll_y: i32,
-                  scroll_y: i32,
-                  dirty: bool,
-                  status: &str| {
+                      win_w: u16,
+                      win_h: u16,
+                      sb_w: i32,
+                      pl_w: i32,
+                      active_drag: Option<usize>,
+                      buffer: &PieceTable,
+                      parser: &mut MarkdownParser,
+                      nb_mgr: &NotebookManager,
+                      focus: ActiveFocus,
+                      cursor_pos: usize,
+                      selection: &Selection,
+                      editor_scroll_y: i32,
+                      scroll_y: i32,
+                      dirty: bool,
+                      mode: WorkspaceMode,
+                      status: &str| -> Vec<ClickableTarget> {
         let mut canvas = Canvas::new(fb, win_w as u32, win_h as u32);
         canvas.clear(theme.bg_workspace);
 
         let menu_h = 28;
         let status_h = 24;
-        let layout = compute_workspace_layout_with_chrome(
+        let layout = compute_workspace_layout_with_mode(
             win_w as i32,
             win_h as i32,
             sb_w,
             pl_w,
             3,
-            true,
+            mode,
             menu_h,
             status_h,
         );
@@ -267,26 +383,38 @@ fn main() {
         canvas.draw_text("LEKHNI", 12, 6, 0xFF_61_AF_EF);
 
         // Interactive Pane Focus Pills in Header
-        let pill_sidebar = Rect::new(80, 4, 110, 20);
-        let pill_pages = Rect::new(196, 4, 90, 20);
-        let pill_editor = Rect::new(292, 4, 100, 20);
+        let pill_sidebar = Rect::new(80, 4, 100, 20);
+        let pill_pages = Rect::new(186, 4, 85, 20);
+        let pill_editor = Rect::new(277, 4, 90, 20);
 
         canvas.fill_rect(pill_sidebar, if focus == ActiveFocus::Sidebar { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[1] NOTEBOOKS", 86, 6, if focus == ActiveFocus::Sidebar { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        canvas.draw_text("[1] NOTES", 86, 6, if focus == ActiveFocus::Sidebar { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_pages, if focus == ActiveFocus::PageList { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[2] PAGES", 204, 6, if focus == ActiveFocus::PageList { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        canvas.draw_text("[2] PAGES", 192, 6, if focus == ActiveFocus::PageList { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_editor, if focus == ActiveFocus::Editor { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[3] EDITOR", 302, 6, if focus == ActiveFocus::Editor { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        canvas.draw_text("[3] EDIT", 283, 6, if focus == ActiveFocus::Editor { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
-        canvas.draw_text("[Ctrl+N] New NB  [Ctrl+P] New Page  [Ctrl+S] Save", 408, 6, 0xFF_98_C3_79);
+        // View Mode Selector Pills (F1: Split, F2: Editor, F3: Preview)
+        let pill_m_split = Rect::new(380, 4, 75, 20);
+        let pill_m_edit = Rect::new(460, 4, 75, 20);
+        let pill_m_prev = Rect::new(540, 4, 80, 20);
+
+        canvas.fill_rect(pill_m_split, if mode == WorkspaceMode::Split { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("[F1] SPLIT", 384, 6, if mode == WorkspaceMode::Split { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.fill_rect(pill_m_edit, if mode == WorkspaceMode::EditorOnly { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("[F2] EDIT", 466, 6, if mode == WorkspaceMode::EditorOnly { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.fill_rect(pill_m_prev, if mode == WorkspaceMode::PreviewOnly { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("[F3] PREV", 546, 6, if mode == WorkspaceMode::PreviewOnly { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         let active_nb_name = nb_mgr.notebooks.get(nb_mgr.active_notebook_idx).map(|s| s.as_str()).unwrap_or("None");
         let active_pg_name = nb_mgr.pages.get(nb_mgr.active_page_idx).map(|s| s.as_str()).unwrap_or("None");
         let right_label = format!("{}/{}", active_nb_name, active_pg_name);
         let right_x = (win_w as i32) - (right_label.len() as i32 * 8) - 16;
-        if right_x > 680 {
+        if right_x > 630 {
             canvas.draw_text(&right_label, right_x, 6, 0xFF_E5_C0_7B);
         }
 
@@ -360,103 +488,110 @@ fn main() {
         let s2_color = if active_drag == Some(2) { 0xFF_00_7A_CC } else { theme.border_color };
         canvas.fill_rect(layout.splitter_2_rect, s2_color);
 
-        // F. Editor Pane
-        let ed_bg = if focus == ActiveFocus::Editor { 0xFF_28_2C_34 } else { 0xFF_21_25_2B };
-        canvas.fill_rect(layout.editor_rect, ed_bg);
-        if focus == ActiveFocus::Editor {
-            canvas.fill_rect(Rect::new(layout.editor_rect.x, layout.editor_rect.y, layout.editor_rect.width, 3), 0xFF_00_7A_CC);
-        }
-
-        // Gutter
-        let gutter_w = 44;
-        canvas.fill_rect(
-            Rect::new(layout.editor_rect.x, layout.editor_rect.y, gutter_w, layout.editor_rect.height),
-            0xFF_21_25_2B,
-        );
-        canvas.fill_rect(Rect::new(layout.editor_rect.x + gutter_w - 1, layout.editor_rect.y, 1, layout.editor_rect.height), 0xFF_3E_44_51);
-
         let mut doc_bytes = vec![0u8; buffer.len()];
         buffer.copy_range(0, buffer.len(), &mut doc_bytes);
         let doc_str = String::from_utf8_lossy(&doc_bytes);
 
-        // Clip canvas strictly to Editor viewport
-        canvas.clip = layout.editor_rect;
+        // F. Editor Pane (Rendered if mode is Split or EditorOnly)
+        if mode != WorkspaceMode::PreviewOnly && layout.editor_rect.width > 0 {
+            let ed_bg = if focus == ActiveFocus::Editor { 0xFF_28_2C_34 } else { 0xFF_21_25_2B };
+            canvas.fill_rect(layout.editor_rect, ed_bg);
+            if focus == ActiveFocus::Editor {
+                canvas.fill_rect(Rect::new(layout.editor_rect.x, layout.editor_rect.y, layout.editor_rect.width, 3), 0xFF_00_7A_CC);
+            }
 
-        let mut line_num = 1;
-        let mut ed_y = layout.editor_rect.y + 10 - editor_scroll_y;
-        let mut char_count_acc = 0usize;
-        let (sel_start, sel_end) = selection.byte_range();
+            // Gutter
+            let gutter_w = 44;
+            canvas.fill_rect(
+                Rect::new(layout.editor_rect.x, layout.editor_rect.y, gutter_w, layout.editor_rect.height),
+                0xFF_21_25_2B,
+            );
+            canvas.fill_rect(Rect::new(layout.editor_rect.x + gutter_w - 1, layout.editor_rect.y, 1, layout.editor_rect.height), 0xFF_3E_44_51);
 
-        for line in doc_str.split('\n') {
-            let line_len = line.len();
-            let line_start = char_count_acc;
-            let line_end = line_start + line_len;
+            // Clip canvas strictly to Editor viewport
+            canvas.clip = layout.editor_rect;
 
-            if ed_y + 18 >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
-                // Line number
-                let num_str = format!("{:3}", line_num);
-                canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
+            let mut line_num = 1;
+            let mut ed_y = layout.editor_rect.y + 10 - editor_scroll_y;
+            let mut char_count_acc = 0usize;
+            let (sel_start, sel_end) = selection.byte_range();
 
-                let text_x = layout.editor_rect.x + gutter_w + 10;
+            for line in doc_str.split('\n') {
+                let line_len = line.len();
+                let line_start = char_count_acc;
+                let line_end = line_start + line_len;
 
-                // Selection highlight behind text
-                if !selection.is_collapsed() && sel_start < line_end && sel_end > line_start {
-                    let hl_start = sel_start.max(line_start) - line_start;
-                    let hl_end = sel_end.min(line_end) - line_start;
-                    let hl_x1 = text_x + (hl_start as i32) * 8;
-                    let hl_x2 = text_x + (hl_end as i32) * 8;
-                    canvas.fill_rect(Rect::new(hl_x1, ed_y, (hl_x2 - hl_x1).max(4), 18), 0xFF_26_4F_78);
-                }
+                if ed_y + 18 >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
+                    // Line number in gutter
+                    let num_str = format!("{:3}", line_num);
+                    canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
 
-                // Draw line text
-                canvas.draw_text(line, text_x, ed_y, 0xFF_AB_B2_BF);
+                    let text_x = layout.editor_rect.x + gutter_w + 10;
 
-                // Caret cursor
-                if focus == ActiveFocus::Editor && cursor_pos >= line_start && cursor_pos <= line_end {
-                    let col = (cursor_pos - line_start) as i32;
-                    let cur_x = text_x + col * 8;
-                    if cur_x + 2 < layout.editor_rect.right() {
-                        canvas.fill_rect(Rect::new(cur_x, ed_y, 2, 16), 0xFF_52_8B_FF);
+                    // Selection highlight behind text
+                    if !selection.is_collapsed() && sel_start < line_end && sel_end > line_start {
+                        let hl_start = sel_start.max(line_start) - line_start;
+                        let hl_end = sel_end.min(line_end) - line_start;
+                        let hl_x1 = text_x + (hl_start as i32) * 8;
+                        let hl_x2 = text_x + (hl_end as i32) * 8;
+                        canvas.fill_rect(Rect::new(hl_x1, ed_y, (hl_x2 - hl_x1).max(4), 18), 0xFF_26_4F_78);
+                    }
+
+                    // Draw line text with Markdown syntax highlighting
+                    render_syntax_highlighted_editor_line(&mut canvas, line, text_x, ed_y);
+
+                    // Caret cursor
+                    if focus == ActiveFocus::Editor && cursor_pos >= line_start && cursor_pos <= line_end {
+                        let col = (cursor_pos - line_start) as i32;
+                        let cur_x = text_x + col * 8;
+                        if cur_x + 2 < layout.editor_rect.right() {
+                            canvas.fill_rect(Rect::new(cur_x, ed_y, 2, 16), 0xFF_52_8B_FF);
+                        }
                     }
                 }
+
+                char_count_acc += line_len + 1; // + 1 for \n
+                line_num += 1;
+                ed_y += 18;
             }
 
-            char_count_acc += line_len + 1; // + 1 for \n
-            line_num += 1;
-            ed_y += 18;
-        }
-
-        // If buffer ends with newline or is empty, draw cursor on final line
-        if char_count_acc <= cursor_pos && ed_y + 18 >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
-            let num_str = format!("{:3}", line_num);
-            canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
-            if focus == ActiveFocus::Editor {
-                let text_x = layout.editor_rect.x + gutter_w + 10;
-                canvas.fill_rect(Rect::new(text_x, ed_y, 2, 16), 0xFF_52_8B_FF);
+            // If buffer ends with newline or is empty, draw cursor on final line
+            if char_count_acc <= cursor_pos && ed_y + 18 >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
+                let num_str = format!("{:3}", line_num);
+                canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
+                if focus == ActiveFocus::Editor {
+                    let text_x = layout.editor_rect.x + gutter_w + 10;
+                    canvas.fill_rect(Rect::new(text_x, ed_y, 2, 16), 0xFF_52_8B_FF);
+                }
             }
+
+            // Restore global clip
+            canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
         }
 
-        // Restore global clip
-        canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
+        // Splitter 3 (Between Editor and Preview in Split Mode)
+        if mode == WorkspaceMode::Split {
+            let s3_color = if active_drag == Some(3) { 0xFF_00_7A_CC } else { theme.border_color };
+            canvas.fill_rect(layout.splitter_3_rect, s3_color);
+        }
 
-        // Splitter 3 (Between Editor and Preview)
-        let s3_color = if active_drag == Some(3) { 0xFF_00_7A_CC } else { theme.border_color };
-        canvas.fill_rect(layout.splitter_3_rect, s3_color);
+        // G. Preview Pane (Rendered if mode is Split or PreviewOnly)
+        let mut click_targets = Vec::new();
+        if mode != WorkspaceMode::EditorOnly && layout.preview_rect.width > 0 {
+            canvas.fill_rect(layout.preview_rect, 0xFF_1E_22_27);
+            parser.parse_full(&doc_bytes);
 
-        // G. Preview Pane
-        canvas.fill_rect(layout.preview_rect, 0xFF_1E_22_27);
-        parser.parse_full(&doc_bytes);
-
-        canvas.clip = layout.preview_rect;
-        PreviewRenderer::render_preview_with_content(
-            &mut canvas,
-            &parser.blocks,
-            &doc_bytes,
-            scroll_y,
-            layout.preview_rect.width,
-            layout.preview_rect.height,
-        );
-        canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
+            canvas.clip = layout.preview_rect;
+            click_targets = PreviewRenderer::render_preview_with_content(
+                &mut canvas,
+                &parser.blocks,
+                &doc_bytes,
+                scroll_y,
+                layout.preview_rect.width,
+                layout.preview_rect.height,
+            );
+            canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
+        }
 
         // H. Status Bar
         let sb_bar_bg = if dirty { 0xFF_D1_9A_66 } else { 0xFF_00_7A_CC };
@@ -465,17 +600,24 @@ fn main() {
         let (caret_line, line_start) = buffer.offset_to_line(cursor_pos);
         let caret_col = cursor_pos.saturating_sub(line_start);
         let dirty_flag = if dirty { " [DIRTY]" } else { "" };
+        let mode_str = match mode {
+            WorkspaceMode::Split => "Split",
+            WorkspaceMode::EditorOnly => "Editor",
+            WorkspaceMode::PreviewOnly => "Preview",
+        };
         let status_text = format!(
-            " {}{} | Ln {}, Col {} | Focus: {:?} | Size: {}x{} | {} bytes, {} words | Latency: <1ms",
-            status, dirty_flag, caret_line + 1, caret_col + 1, focus, win_w, win_h, buffer.len(), word_count
+            " {}{} | Mode: {} | Ln {}, Col {} | Focus: {:?} | {} bytes, {} words",
+            status, dirty_flag, mode_str, caret_line + 1, caret_col + 1, focus, buffer.len(), word_count
         );
         canvas.draw_text(&status_text, 8, layout.status_bar_rect.y + 4, 0xFF_FF_FF_FF);
+
+        click_targets
     };
 
-    redraw(
+    let mut current_click_targets = redraw(
         &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
         &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-        editor_scroll_y, scroll_y, is_dirty, &status_msg,
+        editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
     );
     let _ = win.present_framebuffer(&fb, width, height);
 
@@ -529,10 +671,10 @@ fn main() {
                 last_edit_time = Instant::now();
                 status_msg = "Edited".into();
             }
-            redraw(
+            current_click_targets = redraw(
                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
             );
             let _ = win.present_framebuffer(&fb, width, height);
         }
@@ -547,10 +689,10 @@ fn main() {
                 }
                 is_dirty = false;
                 status_msg = "Autosaved note atomically".into();
-                redraw(
+                current_click_targets = redraw(
                     &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                     &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                    editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                    editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                 );
                 let _ = win.present_framebuffer(&fb, width, height);
             }
@@ -576,10 +718,10 @@ fn main() {
                             win.height = new_h;
                             fb.resize((width as usize) * (height as usize), theme.bg_workspace);
                             status_msg = format!("Resized to {}x{}", width, height);
-                            redraw(
+                            current_click_targets = redraw(
                                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                             );
                             let _ = win.present_framebuffer(&fb, width, height);
                         }
@@ -595,15 +737,15 @@ fn main() {
                             } else if dragged == 2 {
                                 page_list_w = (mouse_x - sidebar_w).clamp(100, (width as i32) / 3);
                             }
-                            redraw(
+                            current_click_targets = redraw(
                                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                             );
                             let _ = win.present_framebuffer(&fb, width, height);
                         } else if dragging_selection {
-                            let layout = compute_workspace_layout_with_chrome(
-                                width as i32, height as i32, sidebar_w, page_list_w, 3, true, 28, 24,
+                            let layout = compute_workspace_layout_with_mode(
+                                width as i32, height as i32, sidebar_w, page_list_w, 3, view_mode, 28, 24,
                             );
                             let gutter_w = 44;
                             let text_x = layout.editor_rect.x + gutter_w + 10;
@@ -613,10 +755,10 @@ fn main() {
                             let new_off = offset_from_line_col(&buffer, target_line, target_col);
                             selection.head = Cursor::new(new_off, target_line, target_col);
                             cursor_pos = new_off;
-                            redraw(
+                            current_click_targets = redraw(
                                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                             );
                             let _ = win.present_framebuffer(&fb, width, height);
                         }
@@ -626,10 +768,10 @@ fn main() {
                         if dragging_splitter.is_some() || dragging_selection {
                             dragging_splitter = None;
                             dragging_selection = false;
-                            redraw(
+                            current_click_targets = redraw(
                                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                             );
                             let _ = win.present_framebuffer(&fb, width, height);
                         }
@@ -640,8 +782,8 @@ fn main() {
                         let mouse_x = i16::from_le_bytes([event[24], event[25]]) as i32;
                         let mouse_y = i16::from_le_bytes([event[26], event[27]]) as i32;
 
-                        let layout = compute_workspace_layout_with_chrome(
-                            width as i32, height as i32, sidebar_w, page_list_w, 3, true, 28, 24,
+                        let layout = compute_workspace_layout_with_mode(
+                            width as i32, height as i32, sidebar_w, page_list_w, 3, view_mode, 28, 24,
                         );
 
                         if button == 1 {
@@ -653,16 +795,25 @@ fn main() {
                                 dragging_splitter = Some(2);
                                 status_msg = "Dragging Page List Splitter".into();
                             } else if mouse_y < 28 {
-                                // Click in top header pills
-                                if (80..190).contains(&mouse_x) {
+                                // Click in top header focus or mode pills
+                                if (80..180).contains(&mouse_x) {
                                     focus = ActiveFocus::Sidebar;
                                     status_msg = "Focused Notebooks".into();
-                                } else if (196..286).contains(&mouse_x) {
+                                } else if (186..271).contains(&mouse_x) {
                                     focus = ActiveFocus::PageList;
                                     status_msg = "Focused Pages".into();
-                                } else if (292..392).contains(&mouse_x) {
+                                } else if (277..367).contains(&mouse_x) {
                                     focus = ActiveFocus::Editor;
                                     status_msg = "Focused Editor".into();
+                                } else if (380..455).contains(&mouse_x) {
+                                    view_mode = WorkspaceMode::Split;
+                                    status_msg = "Mode: Split View".into();
+                                } else if (460..535).contains(&mouse_x) {
+                                    view_mode = WorkspaceMode::EditorOnly;
+                                    status_msg = "Mode: Editor Only".into();
+                                } else if (540..620).contains(&mouse_x) {
+                                    view_mode = WorkspaceMode::PreviewOnly;
+                                    status_msg = "Mode: Preview Only".into();
                                 }
                             } else if mouse_x < layout.sidebar_rect.right() {
                                 focus = ActiveFocus::Sidebar;
@@ -707,7 +858,7 @@ fn main() {
                                     undo_mgr.clear();
                                     status_msg = format!("Selected page '{}'", nb_mgr.pages[nb_mgr.active_page_idx]);
                                 }
-                            } else if mouse_x < layout.editor_rect.right() {
+                            } else if layout.editor_rect.width > 0 && mouse_x < layout.editor_rect.right() {
                                 focus = ActiveFocus::Editor;
                                 let gutter_w = 44;
                                 let text_x = layout.editor_rect.x + gutter_w + 10;
@@ -719,40 +870,113 @@ fn main() {
                                 selection = Selection::collapsed(Cursor::new(off, target_line, target_col));
                                 dragging_selection = true;
                                 status_msg = "Focused Editor".into();
-                            } else {
-                                focus = ActiveFocus::Editor;
-                                status_msg = "Preview Viewport".into();
+                            } else if layout.preview_rect.width > 0 && mouse_x >= layout.preview_rect.x {
+                                // Hit-test interactive preview click targets (links, task checkboxes, headings)
+                                let mut handled_target = false;
+                                for target in &current_click_targets {
+                                    match target {
+                                        ClickableTarget::Link { rect, url } => {
+                                            if rect.contains(mouse_x, mouse_y) {
+                                                let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                                                status_msg = format!("Opened link: {}", url);
+                                                handled_target = true;
+                                                break;
+                                            }
+                                        }
+                                        ClickableTarget::Checkbox { rect, source_byte_offset, is_checked } => {
+                                            if rect.contains(mouse_x, mouse_y) {
+                                                let off = *source_byte_offset;
+                                                let mut slice = [0u8; 6];
+                                                let n = buffer.copy_range(off, 6, &mut slice);
+                                                if n >= 5 {
+                                                    let s = core::str::from_utf8(&slice[..5]).unwrap_or("");
+                                                    if s.starts_with("- [ ]") || s.starts_with("- [x]") {
+                                                        undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
+                                                        buffer.delete(off, 5);
+                                                        buffer.insert(off, if *is_checked { b"- [ ]" } else { b"- [x]" });
+                                                        is_dirty = true;
+                                                        last_edit_time = Instant::now();
+                                                        status_msg = if *is_checked { "Unchecked task" } else { "Checked task" }.into();
+                                                        handled_target = true;
+                                                        break;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        ClickableTarget::Heading { rect, source_byte_offset } => {
+                                            if rect.contains(mouse_x, mouse_y) {
+                                                cursor_pos = *source_byte_offset;
+                                                selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                                focus = ActiveFocus::Editor;
+                                                status_msg = "Navigated editor to heading".into();
+                                                handled_target = true;
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                                if !handled_target {
+                                    status_msg = "Preview Viewport".into();
+                                }
                             }
-                            redraw(
+                            current_click_targets = redraw(
                                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                             );
                             let _ = win.present_framebuffer(&fb, width, height);
                         } else if button == 4 {
-                            // Scroll wheel UP
+                            // Scroll wheel UP with synchronized scroll locking
                             if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
                                 editor_scroll_y = (editor_scroll_y - 24).max(0);
+                                let top_line = (editor_scroll_y / 18) as usize;
+                                let off = buffer.line_to_offset(top_line);
+                                let mut doc_bytes = vec![0u8; buffer.len()];
+                                buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                let layouts = PreviewRenderer::compute_layouts(&parser.blocks, &doc_bytes, layout.preview_rect.width);
+                                if let Some(bl) = layouts.iter().find(|l| off >= l.source_start && off <= l.source_end) {
+                                    scroll_y = bl.y;
+                                }
                             } else {
                                 scroll_y = (scroll_y - 24).max(0);
+                                let mut doc_bytes = vec![0u8; buffer.len()];
+                                buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                let layouts = PreviewRenderer::compute_layouts(&parser.blocks, &doc_bytes, layout.preview_rect.width);
+                                if let Some(bl) = layouts.iter().find(|l| l.y + l.height >= scroll_y) {
+                                    editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * 18;
+                                }
                             }
-                            redraw(
+                            current_click_targets = redraw(
                                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                             );
                             let _ = win.present_framebuffer(&fb, width, height);
                         } else if button == 5 {
-                            // Scroll wheel DOWN
+                            // Scroll wheel DOWN with synchronized scroll locking
                             if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
                                 editor_scroll_y += 24;
+                                let top_line = (editor_scroll_y / 18) as usize;
+                                let off = buffer.line_to_offset(top_line);
+                                let mut doc_bytes = vec![0u8; buffer.len()];
+                                buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                let layouts = PreviewRenderer::compute_layouts(&parser.blocks, &doc_bytes, layout.preview_rect.width);
+                                if let Some(bl) = layouts.iter().find(|l| off >= l.source_start && off <= l.source_end) {
+                                    scroll_y = bl.y;
+                                }
                             } else {
                                 scroll_y += 24;
+                                let mut doc_bytes = vec![0u8; buffer.len()];
+                                buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                let layouts = PreviewRenderer::compute_layouts(&parser.blocks, &doc_bytes, layout.preview_rect.width);
+                                if let Some(bl) = layouts.iter().find(|l| l.y + l.height >= scroll_y) {
+                                    editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * 18;
+                                }
                             }
-                            redraw(
+                            current_click_targets = redraw(
                                 &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                                 &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                             );
                             let _ = win.present_framebuffer(&fb, width, height);
                         }
@@ -767,6 +991,18 @@ fn main() {
                             KeyAction::Escape => {
                                 println!("\nEscape pressed. Exiting Lekhni.");
                                 break;
+                            }
+                            KeyAction::F1 => {
+                                view_mode = WorkspaceMode::Split;
+                                status_msg = "Switched to Split View".into();
+                            }
+                            KeyAction::F2 => {
+                                view_mode = WorkspaceMode::EditorOnly;
+                                status_msg = "Switched to Editor Only".into();
+                            }
+                            KeyAction::F3 => {
+                                view_mode = WorkspaceMode::PreviewOnly;
+                                status_msg = "Switched to Preview Only".into();
                             }
                             KeyAction::Tab => {
                                 focus = match focus {
@@ -1094,8 +1330,8 @@ fn main() {
                         }
 
                         // Auto-scroll editor so caret stays visible on screen
-                        let layout = compute_workspace_layout_with_chrome(
-                            width as i32, height as i32, sidebar_w, page_list_w, 3, true, 28, 24,
+                        let layout = compute_workspace_layout_with_mode(
+                            width as i32, height as i32, sidebar_w, page_list_w, 3, view_mode, 28, 24,
                         );
                         let (caret_line, _) = buffer.offset_to_line(cursor_pos);
                         let caret_y = (caret_line as i32) * 18;
@@ -1106,10 +1342,10 @@ fn main() {
                             editor_scroll_y = (caret_y + 18 - visible_h).max(0);
                         }
 
-                        redraw(
+                        current_click_targets = redraw(
                             &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
                             &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                            editor_scroll_y, scroll_y, is_dirty, &status_msg,
+                            editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
                         );
                         let _ = win.present_framebuffer(&fb, width, height);
                     }

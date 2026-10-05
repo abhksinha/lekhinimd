@@ -71,6 +71,9 @@ impl InlineParser {
         let mut in_italic = false;
         let mut italic_start = 0;
 
+        let mut in_strike = false;
+        let mut strike_start = 0;
+
         while i < len {
             let b = text[i];
 
@@ -91,6 +94,45 @@ impl InlineParser {
             if in_code {
                 i += 1;
                 continue;
+            }
+
+            // Strikethrough ~~...~~
+            if b == b'~' && i + 1 < len && text[i + 1] == b'~' {
+                if in_strike {
+                    out_spans.push(PackedSpan::new(strike_start as u32, style::STRIKE, 0));
+                    out_spans.push(PackedSpan::new((i + 2) as u32, style::PLAIN, 0));
+                    in_strike = false;
+                } else {
+                    in_strike = true;
+                    strike_start = i;
+                }
+                i += 2;
+                continue;
+            }
+
+            if in_strike {
+                i += 1;
+                continue;
+            }
+
+            // Links [label](url)
+            if b == b'[' {
+                let mut j = i + 1;
+                while j < len && text[j] != b']' && text[j] != b'\n' {
+                    j += 1;
+                }
+                if j < len && text[j] == b']' && j + 1 < len && text[j + 1] == b'(' {
+                    let mut k = j + 2;
+                    while k < len && text[k] != b')' && text[k] != b'\n' {
+                        k += 1;
+                    }
+                    if k < len && text[k] == b')' {
+                        out_spans.push(PackedSpan::new(i as u32, style::LINK, 0));
+                        out_spans.push(PackedSpan::new((k + 1) as u32, style::PLAIN, 0));
+                        i = k + 1;
+                        continue;
+                    }
+                }
             }
 
             // Bold **...**

@@ -149,6 +149,26 @@ impl MarkdownParser {
                         0,
                         0,
                     );
+                } else if is_table_row(trimmed) {
+                    let can_coalesce = if let Some(&last_kind) = self.blocks.kind.last() {
+                        last_kind == BlockKind::Table as u8 && self.blocks.end.last().copied() == Some(offset as u32)
+                    } else {
+                        false
+                    };
+
+                    if can_coalesce {
+                        if let Some(last_end) = self.blocks.end.last_mut() {
+                            *last_end = next_offset as u32;
+                        }
+                    } else {
+                        self.blocks.push(
+                            BlockKind::Table,
+                            offset as u32,
+                            next_offset as u32,
+                            0,
+                            0,
+                        );
+                    }
                 } else {
                     // Paragraph: check if can coalesce with previous paragraph
                     let can_coalesce = if let Some(&last_kind) = self.blocks.kind.last() {
@@ -283,4 +303,10 @@ fn is_thematic_break(bytes: &[u8]) -> bool {
         }
     }
     count >= 3
+}
+
+#[inline(always)]
+fn is_table_row(bytes: &[u8]) -> bool {
+    let bar_count = bytes.iter().filter(|&&b| b == b'|').count();
+    bar_count >= 2 && (bytes.starts_with(b"|") || bytes.ends_with(b"|"))
 }

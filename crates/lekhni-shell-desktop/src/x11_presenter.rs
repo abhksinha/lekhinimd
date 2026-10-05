@@ -32,6 +32,9 @@ pub enum KeyAction {
     SelectAll,
     NewNotebook,
     NewPage,
+    F1,
+    F2,
+    F3,
     None,
 }
 
@@ -285,6 +288,9 @@ impl X11Window {
             0xFF55 | 0xFF9A => KeyAction::PageUp,
             0xFF56 | 0xFF9B => KeyAction::PageDown,
             0xFF57 | 0xFF9C => KeyAction::End { shift },
+            0xFFBE => KeyAction::F1,
+            0xFFBF => KeyAction::F2,
+            0xFFC0 => KeyAction::F3,
             // Latin-1 / ASCII printable range
             0x0020..=0x007E | 0x00A0..=0x00FF => {
                 let mut ch = char::from_u32(ks).unwrap_or(' ');

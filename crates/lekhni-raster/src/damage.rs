@@ -28,6 +28,12 @@ impl Rect {
         self.y + self.height
     }
 
+    /// Checks if a point (px, py) is contained within this rectangle.
+    #[inline(always)]
+    pub const fn contains(&self, px: i32, py: i32) -> bool {
+        px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
+    }
+
     /// Computes intersection with another rectangle.
     pub fn intersect(&self, other: &Rect) -> Option<Rect> {
         let x1 = self.x.max(other.x);
