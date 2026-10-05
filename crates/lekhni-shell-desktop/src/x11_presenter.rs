@@ -108,95 +108,10 @@ impl X11Window {
         let root_window = u32::from_le_bytes(reply_body[screen_offset..screen_offset + 4].try_into().unwrap());
         let root_visual = u32::from_le_bytes(reply_body[screen_offset + 32..screen_offset + 36].try_into().unwrap());
 
-        let window_id = res_id_base | 1;
-        let gc_id = res_id_base | 2;
-
-        // 2. CreateWindow (Opcode 1)
-        // Request length = 8 (header + fields) + 2 (value mask entries: background + event-mask)
-        let mut create_win = Vec::new();
-        create_win.push(1u8); // CreateWindow opcode
-        create_win.push(0u8); // Depth = copy from parent
-        create_win.extend_from_slice(&10u16.to_le_bytes()); // 10 * 4 bytes total
-        create_win.extend_from_slice(&window_id.to_le_bytes());
-        create_win.extend_from_slice(&root_window.to_le_bytes());
-        create_win.extend_from_slice(&0i16.to_le_bytes()); // X
-        create_win.extend_from_slice(&0i16.to_le_bytes()); // Y
-        create_win.extend_from_slice(&width.to_le_bytes());
-        create_win.extend_from_slice(&height.to_le_bytes());
-        create_win.extend_from_slice(&0u16.to_le_bytes()); // Border width
-        create_win.extend_from_slice(&1u16.to_le_bytes()); // InputOutput class
-        create_win.extend_from_slice(&root_visual.to_le_bytes());
-        // Value mask: CWBackPixel (0x02) | CWEventMask (0x800) = 0x802
-        create_win.extend_from_slice(&0x802u32.to_le_bytes());
-        create_win.extend_from_slice(&0xFF_1E_1E_1Eu32.to_le_bytes()); // Background color
-        // Event mask: KeyPress (0x01) | ButtonPress (0x04) | ButtonRelease (0x08) | PointerMotion (0x40) | Exposure (0x8000) | StructureNotify (0x20000) | FocusChange (0x200000)
-        create_win.extend_from_slice(&0x22804Du32.to_le_bytes());
-
-        stream.write_all(&create_win).map_err(|e| e.to_string())?;
-
-        // 3. Set Window Title (ChangeProperty opcode 18: WM_NAME)
-        let mut title_req = Vec::new();
-        let title_bytes = title.as_bytes();
-        let title_pad = (4 - (title_bytes.len() % 4)) % 4;
-        let title_units = 6 + (title_bytes.len() + title_pad) / 4;
-        title_req.push(18u8); // ChangeProperty
-        title_req.push(0u8); // Replace mode
-        title_req.extend_from_slice(&(title_units as u16).to_le_bytes());
-        title_req.extend_from_slice(&window_id.to_le_bytes());
-        title_req.extend_from_slice(&39u32.to_le_bytes()); // WM_NAME atom (39)
-        title_req.extend_from_slice(&31u32.to_le_bytes()); // STRING atom (31)
-        title_req.push(8); // 8-bit format
-        title_req.extend_from_slice(&[0, 0, 0]); // Unused
-        title_req.extend_from_slice(&(title_bytes.len() as u32).to_le_bytes());
-        title_req.extend_from_slice(title_bytes);
-        title_req.extend_from_slice(&vec![0u8; title_pad]);
-
-        stream.write_all(&title_req).map_err(|e| e.to_string())?;
-
-        // 4. CreateGC (Opcode 55)
-        let mut gc_req = Vec::new();
-        gc_req.push(55u8); // CreateGC
-        gc_req.push(0);
-        gc_req.extend_from_slice(&4u16.to_le_bytes()); // 4 * 4 bytes
-        gc_req.extend_from_slice(&gc_id.to_le_bytes());
-        gc_req.extend_from_slice(&window_id.to_le_bytes());
-        gc_req.extend_from_slice(&0u32.to_le_bytes()); // Value mask = 0
-
-        stream.write_all(&gc_req).map_err(|e| e.to_string())?;
-
-        // 5. MapWindow (Opcode 8)
-        let mut map_req = Vec::new();
-        map_req.push(8u8); // MapWindow
-        map_req.push(0);
-        map_req.extend_from_slice(&2u16.to_le_bytes()); // 2 * 4 bytes
-        map_req.extend_from_slice(&window_id.to_le_bytes());
-        stream.write_all(&map_req).map_err(|e| e.to_string())?;
-
-        // 6. RaiseWindow: ConfigureWindow (Opcode 12) with stack_mode = Above (0)
-        let mut raise_req = Vec::new();
-        raise_req.push(12u8); // ConfigureWindow
-        raise_req.push(0);
-        raise_req.extend_from_slice(&4u16.to_le_bytes()); // 4 * 4 = 16 bytes
-        raise_req.extend_from_slice(&window_id.to_le_bytes());
-        raise_req.extend_from_slice(&0x0040u16.to_le_bytes()); // value-mask: CWStackMode (0x0040)
-        raise_req.extend_from_slice(&[0, 0]); // pad
-        raise_req.extend_from_slice(&0u32.to_le_bytes()); // Above = 0
-        stream.write_all(&raise_req).map_err(|e| e.to_string())?;
-
-        // 7. SetInputFocus (Opcode 42)
-        let mut focus_req = Vec::new();
-        focus_req.push(42u8); // SetInputFocus
-        focus_req.push(2u8); // RevertToParent
-        focus_req.extend_from_slice(&3u16.to_le_bytes()); // 3 * 4 = 12 bytes
-        focus_req.extend_from_slice(&window_id.to_le_bytes());
-        focus_req.extend_from_slice(&0u32.to_le_bytes()); // CurrentTime = 0
-        stream.write_all(&focus_req).map_err(|e| e.to_string())?;
-        stream.flush().map_err(|e| e.to_string())?;
-
         let min_keycode = reply_body[26];
         let max_keycode = reply_body[27];
 
-        // Query X11 keyboard mapping (Opcode 101: GetKeyboardMapping)
+        // 2. Query X11 keyboard mapping (Opcode 101: GetKeyboardMapping) right after handshake
         let count = max_keycode.saturating_sub(min_keycode) + 1;
         let mut keymap_req = Vec::with_capacity(8);
         keymap_req.push(101u8); // GetKeyboardMapping opcode
@@ -220,6 +135,82 @@ impl X11Window {
         for chunk in km_bytes.chunks_exact(4) {
             keysyms.push(u32::from_le_bytes(chunk.try_into().unwrap()));
         }
+
+        let window_id = res_id_base | 1;
+        let gc_id = res_id_base | 2;
+
+        // 3. CreateWindow (Opcode 1)
+        // Request length = 8 (header + fields) + 2 (value mask entries: background + event-mask)
+        let mut create_win = Vec::new();
+        create_win.push(1u8); // CreateWindow opcode
+        create_win.push(0u8); // Depth = copy from parent
+        create_win.extend_from_slice(&10u16.to_le_bytes()); // 10 * 4 bytes total
+        create_win.extend_from_slice(&window_id.to_le_bytes());
+        create_win.extend_from_slice(&root_window.to_le_bytes());
+        create_win.extend_from_slice(&0i16.to_le_bytes()); // X
+        create_win.extend_from_slice(&0i16.to_le_bytes()); // Y
+        create_win.extend_from_slice(&width.to_le_bytes());
+        create_win.extend_from_slice(&height.to_le_bytes());
+        create_win.extend_from_slice(&0u16.to_le_bytes()); // Border width
+        create_win.extend_from_slice(&1u16.to_le_bytes()); // InputOutput class
+        create_win.extend_from_slice(&root_visual.to_le_bytes());
+        // Value mask: CWBackPixel (0x02) | CWEventMask (0x800) = 0x802
+        create_win.extend_from_slice(&0x802u32.to_le_bytes());
+        create_win.extend_from_slice(&0xFF_1E_1E_1Eu32.to_le_bytes()); // Background color
+        // Event mask: KeyPress (0x01) | ButtonPress (0x04) | ButtonRelease (0x08) | PointerMotion (0x40) | Exposure (0x8000) | StructureNotify (0x20000) | FocusChange (0x200000)
+        create_win.extend_from_slice(&0x22804Du32.to_le_bytes());
+
+        stream.write_all(&create_win).map_err(|e| e.to_string())?;
+
+        // 4. Set Window Title (ChangeProperty opcode 18: WM_NAME)
+        let mut title_req = Vec::new();
+        let title_bytes = title.as_bytes();
+        let title_pad = (4 - (title_bytes.len() % 4)) % 4;
+        let title_units = 6 + (title_bytes.len() + title_pad) / 4;
+        title_req.push(18u8); // ChangeProperty
+        title_req.push(0u8); // Replace mode
+        title_req.extend_from_slice(&(title_units as u16).to_le_bytes());
+        title_req.extend_from_slice(&window_id.to_le_bytes());
+        title_req.extend_from_slice(&39u32.to_le_bytes()); // WM_NAME atom (39)
+        title_req.extend_from_slice(&31u32.to_le_bytes()); // STRING atom (31)
+        title_req.push(8); // 8-bit format
+        title_req.extend_from_slice(&[0, 0, 0]); // Unused
+        title_req.extend_from_slice(&(title_bytes.len() as u32).to_le_bytes());
+        title_req.extend_from_slice(title_bytes);
+        title_req.extend_from_slice(&vec![0u8; title_pad]);
+
+        stream.write_all(&title_req).map_err(|e| e.to_string())?;
+
+        // 5. CreateGC (Opcode 55)
+        let mut gc_req = Vec::new();
+        gc_req.push(55u8); // CreateGC
+        gc_req.push(0);
+        gc_req.extend_from_slice(&4u16.to_le_bytes()); // 4 * 4 bytes
+        gc_req.extend_from_slice(&gc_id.to_le_bytes());
+        gc_req.extend_from_slice(&window_id.to_le_bytes());
+        gc_req.extend_from_slice(&0u32.to_le_bytes()); // Value mask = 0
+
+        stream.write_all(&gc_req).map_err(|e| e.to_string())?;
+
+        // 6. MapWindow (Opcode 8)
+        let mut map_req = Vec::new();
+        map_req.push(8u8); // MapWindow
+        map_req.push(0);
+        map_req.extend_from_slice(&2u16.to_le_bytes()); // 2 * 4 bytes
+        map_req.extend_from_slice(&window_id.to_le_bytes());
+        stream.write_all(&map_req).map_err(|e| e.to_string())?;
+
+        // 7. RaiseWindow: ConfigureWindow (Opcode 12) with stack_mode = Above (0)
+        let mut raise_req = Vec::new();
+        raise_req.push(12u8); // ConfigureWindow
+        raise_req.push(0);
+        raise_req.extend_from_slice(&4u16.to_le_bytes()); // 4 * 4 = 16 bytes
+        raise_req.extend_from_slice(&window_id.to_le_bytes());
+        raise_req.extend_from_slice(&0x0040u16.to_le_bytes()); // value-mask: CWStackMode (0x0040)
+        raise_req.extend_from_slice(&[0, 0]); // pad
+        raise_req.extend_from_slice(&0u32.to_le_bytes()); // Above = 0
+        stream.write_all(&raise_req).map_err(|e| e.to_string())?;
+        stream.flush().map_err(|e| e.to_string())?;
 
         Ok(Self {
             stream,
@@ -381,11 +372,30 @@ impl X11Window {
         self.stream.set_nonblocking(false)?;
         self.stream.set_read_timeout(Some(timeout))?;
         let mut event_buf = [0u8; 32];
-        match self.stream.read_exact(&mut event_buf) {
-            Ok(_) => Ok(Some(event_buf)),
-            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => Ok(None),
-            Err(e) => Err(e),
+        let mut read_bytes = 0;
+        while read_bytes < 32 {
+            match self.stream.read(&mut event_buf[read_bytes..]) {
+                Ok(0) => {
+                    if read_bytes == 0 {
+                        return Ok(None);
+                    } else {
+                        return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "X11 connection closed mid-packet"));
+                    }
+                }
+                Ok(n) => {
+                    read_bytes += n;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock || e.kind() == std::io::ErrorKind::TimedOut => {
+                    if read_bytes == 0 {
+                        return Ok(None);
+                    }
+                    continue;
+                }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
         }
+        Ok(Some(event_buf))
     }
 
     /// Polls for incoming X11 event packets (non-blocking).
