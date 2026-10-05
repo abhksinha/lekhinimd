@@ -111,4 +111,21 @@ fn test_notebook_model() {
 
     assert!(nb.select_page("sub/page2.md"));
     assert_eq!(nb.active_page().unwrap().title, "Page 2");
+
+    // Test rename and move
+    assert!(nb.rename_page("sub/page2.md", "sub/renamed.md", Some("Renamed")));
+    assert_eq!(nb.active_page().unwrap().title, "Renamed");
+    assert_eq!(nb.active_page().unwrap().relative_path, "sub/renamed.md");
+
+    // Test sorting by name and date
+    nb.add_page_with_meta("alpha.md".into(), "Alpha".into(), 200, 50);
+    nb.add_page_with_meta("zebra.md".into(), "Zebra".into(), 100, 30);
+    nb.sort_pages(lekhni_store::notebook::PageSortOrder::NameAsc);
+    assert_eq!(nb.pages[0].relative_path, "alpha.md");
+    nb.sort_pages(lekhni_store::notebook::PageSortOrder::DateModifiedDesc);
+    assert_eq!(nb.pages[0].relative_path, "alpha.md"); // mtime 200 > 100
+
+    // Test deletion
+    assert!(nb.delete_page("alpha.md"));
+    assert_eq!(nb.pages.iter().find(|p| p.relative_path == "alpha.md"), None);
 }

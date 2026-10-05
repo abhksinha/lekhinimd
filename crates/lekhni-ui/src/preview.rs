@@ -508,6 +508,39 @@ fn render_inline_markdown(
             }
         }
 
+        // Wikilinks [[target]] or [[target|label]]
+        if bytes[i] == b'[' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            if let Some(close_bb) = line[i + 2..].find("]]") {
+                let inside = &line[i + 2..i + 2 + close_bb];
+                let (target, label) = if let Some(pipe_pos) = inside.find('|') {
+                    (&inside[..pipe_pos], &inside[pipe_pos + 1..])
+                } else {
+                    (inside, inside)
+                };
+                let w = (label.len() as i32) * 8;
+                let link_rect = Rect::new(x, y, w, 18);
+
+                canvas.draw_text(label, x, y, 0xFF_98_C3_79); // Distinct soft green
+                canvas.fill_rect(Rect::new(x, y + 16, w, 1), 0xFF_98_C3_79);
+
+                let target_clean = target.trim();
+                let doc_url = if target_clean.ends_with(".md") {
+                    target_clean.to_string()
+                } else {
+                    format!("{}.md", target_clean)
+                };
+
+                click_targets.push(ClickableTarget::Link {
+                    rect: link_rect,
+                    url: doc_url,
+                });
+
+                x += w;
+                i += 2 + close_bb + 2;
+                continue;
+            }
+        }
+
         // Links [label](url)
         if bytes[i] == b'[' {
             if let Some(close_b) = line[i + 1..].find(']') {

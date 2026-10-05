@@ -108,14 +108,52 @@ fn parse_json_string_field(json: &str, key: &str) -> Option<String> {
     Some(json[quote_start..quote_end].to_string())
 }
 
+use lekhni_index::trigram::TrigramIndex;
+use lekhni_store::external_edit::{check_external_edit, ConflictResolution, FileGeneration};
+use lekhni_store::notebook::PageSortOrder;
+
+/// Search match hit result from Trigram-backed index.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SearchHit {
+    pub page_idx: usize,
+    pub page_name: String,
+    pub line_num: usize,
+    pub line_text: String,
+    pub byte_offset: usize,
+}
+
+/// Outline item representing a document heading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OutlineItem {
+    pub level: u8,
+    pub title: String,
+    pub byte_offset: usize,
+}
+
+/// Computes fast FNV-1a 64-bit content hash.
+pub fn fnv1a_64(bytes: &[u8]) -> u64 {
+    let mut hash = 0xcbf29ce484222325u64;
+    for &b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(0x100000001b3u64);
+    }
+    hash
+}
+
 /// Workspace Notebook Manager enforcing unique notebook names.
 pub struct NotebookManager {
     pub working_dir: PathBuf,
     pub notebooks: Vec<String>,
     pub active_notebook_idx: usize,
+    // Structure of Arrays (SoA) layout for high L1/L2 cache locality:
     pub pages: Vec<String>,
+    pub page_titles: Vec<String>,
+    pub page_mtimes: Vec<u64>,
+    pub page_words: Vec<usize>,
     pub active_page_idx: usize,
     pub fs: StdFs,
+    pub sort_order: PageSortOrder,
+    pub last_saved_gen: Option<FileGeneration>,
 }
 
 impl NotebookManager {
@@ -125,8 +163,13 @@ impl NotebookManager {
             notebooks: Vec::new(),
             active_notebook_idx: 0,
             pages: Vec::new(),
+            page_titles: Vec::new(),
+            page_mtimes: Vec::new(),
+            page_words: Vec::new(),
             active_page_idx: 0,
             fs: StdFs,
+            sort_order: PageSortOrder::NameAsc,
+            last_saved_gen: None,
         };
         mgr.refresh_notebooks();
         mgr
@@ -161,39 +204,111 @@ impl NotebookManager {
         }
     }
 
-    /// Rescans markdown pages in the active notebook directory.
+    /// Rescans markdown pages in the active notebook directory (supports nested folders).
     pub fn refresh_pages(&mut self) {
+        let active_path = self.pages.get(self.active_page_idx).cloned();
         self.pages.clear();
+        self.page_titles.clear();
+        self.page_mtimes.clear();
+        self.page_words.clear();
+
         if let Some(nb_name) = self.notebooks.get(self.active_notebook_idx) {
             let nb_path = self.working_dir.join(nb_name);
-            if let Ok(entries) = fs::read_dir(&nb_path) {
-                for entry in entries.flatten() {
-                    if let Ok(ft) = entry.file_type() {
-                        if ft.is_file() {
-                            let fname = entry.file_name().to_string_lossy().to_string();
-                            if fname.ends_with(".md") {
-                                self.pages.push(fname);
-                            }
-                        }
-                    }
-                }
+            let mut scanned = Vec::new();
+            scan_markdown_files(&nb_path, "", &mut scanned);
+
+            for rel_path in scanned {
+                let full_path = nb_path.join(&rel_path);
+                let (mtime, words, title) = if let Ok(bytes) = fs::read(&full_path) {
+                    let mtime = fs::metadata(&full_path)
+                        .and_then(|m| m.modified())
+                        .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                        .unwrap_or(0);
+                    let s = String::from_utf8_lossy(&bytes);
+                    let words = s.split_whitespace().count();
+                    let title = s.lines()
+                        .find(|l| l.trim_start().starts_with("# "))
+                        .map(|l| l.trim_start().trim_start_matches("# ").trim().to_string())
+                        .unwrap_or_else(|| {
+                            Path::new(&rel_path)
+                                .file_stem()
+                                .and_then(|n| n.to_str())
+                                .unwrap_or("Note")
+                                .to_string()
+                        });
+                    (mtime, words, title)
+                } else {
+                    (0, 0, rel_path.clone())
+                };
+
+                self.pages.push(rel_path);
+                self.page_titles.push(title);
+                self.page_mtimes.push(mtime);
+                self.page_words.push(words);
             }
         }
 
-        self.pages.sort();
+        self.apply_sort();
 
         // If no pages in active notebook, create welcome.md
         if self.pages.is_empty() {
             let _ = self.create_page("welcome.md", DEFAULT_WELCOME_DOC);
+        } else if let Some(ref prev) = active_path {
+            if let Some(pos) = self.pages.iter().position(|p| p == prev) {
+                self.active_page_idx = pos;
+            } else if self.active_page_idx >= self.pages.len() {
+                self.active_page_idx = 0;
+            }
         } else if self.active_page_idx >= self.pages.len() {
             self.active_page_idx = 0;
         }
     }
 
+    /// Sorts all SoA page arrays in tandem according to `sort_order`.
+    pub fn apply_sort(&mut self) {
+        if self.pages.len() <= 1 {
+            return;
+        }
+
+        let mut indices: Vec<usize> = (0..self.pages.len()).collect();
+        match self.sort_order {
+            PageSortOrder::NameAsc => indices.sort_by(|&a, &b| self.pages[a].cmp(&self.pages[b])),
+            PageSortOrder::NameDesc => indices.sort_by(|&a, &b| self.pages[b].cmp(&self.pages[a])),
+            PageSortOrder::DateModifiedDesc => indices.sort_by(|&a, &b| self.page_mtimes[b].cmp(&self.page_mtimes[a])),
+            PageSortOrder::DateModifiedAsc => indices.sort_by(|&a, &b| self.page_mtimes[a].cmp(&self.page_mtimes[b])),
+        }
+
+        let orig_pages = self.pages.clone();
+        let orig_titles = self.page_titles.clone();
+        let orig_mtimes = self.page_mtimes.clone();
+        let orig_words = self.page_words.clone();
+
+        for (new_pos, &old_idx) in indices.iter().enumerate() {
+            self.pages[new_pos] = orig_pages[old_idx].clone();
+            self.page_titles[new_pos] = orig_titles[old_idx].clone();
+            self.page_mtimes[new_pos] = orig_mtimes[old_idx];
+            self.page_words[new_pos] = orig_words[old_idx];
+        }
+    }
+
+    /// Cycles to the next sort order.
+    pub fn toggle_sort(&mut self) -> &'static str {
+        self.sort_order = match self.sort_order {
+            PageSortOrder::NameAsc => PageSortOrder::NameDesc,
+            PageSortOrder::NameDesc => PageSortOrder::DateModifiedDesc,
+            PageSortOrder::DateModifiedDesc => PageSortOrder::DateModifiedAsc,
+            PageSortOrder::DateModifiedAsc => PageSortOrder::NameAsc,
+        };
+        self.apply_sort();
+        match self.sort_order {
+            PageSortOrder::NameAsc => "Name (A-Z)",
+            PageSortOrder::NameDesc => "Name (Z-A)",
+            PageSortOrder::DateModifiedDesc => "Date (Newest)",
+            PageSortOrder::DateModifiedAsc => "Date (Oldest)",
+        }
+    }
+
     /// Creates a notebook with a strictly unique name.
-    ///
-    /// If a notebook with the requested name already exists (case-insensitively),
-    /// generates a guaranteed unique name with a numerical suffix.
     pub fn create_notebook(&mut self, requested_name: &str) -> String {
         let clean_name = requested_name.trim();
         let base_name = if clean_name.is_empty() { "Notebook" } else { clean_name };
@@ -242,16 +357,179 @@ impl NotebookManager {
         }
 
         let file_path = self.working_dir.join(nb_name).join(&clean);
+        if let Some(parent) = file_path.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
         let _ = fs::write(&file_path, content);
 
-        if !self.pages.iter().any(|p| p == &clean) {
-            self.pages.push(clean.clone());
-            self.pages.sort();
-        }
+        self.refresh_pages();
         if let Some(pos) = self.pages.iter().position(|p| p == &clean) {
             self.active_page_idx = pos;
         }
         Some(clean)
+    }
+
+    /// Deletes a page from the active notebook.
+    pub fn delete_page(&mut self, page_name: &str) -> Result<(), String> {
+        let nb_name = self.notebooks.get(self.active_notebook_idx).ok_or("No active notebook")?;
+        let file_path = self.working_dir.join(nb_name).join(page_name);
+        if file_path.exists() {
+            fs::remove_file(&file_path).map_err(|e| e.to_string())?;
+        }
+        self.refresh_pages();
+        Ok(())
+    }
+
+    /// Renames a page in the active notebook.
+    pub fn rename_page(&mut self, old_name: &str, new_name: &str) -> Result<String, String> {
+        let nb_name = self.notebooks.get(self.active_notebook_idx).ok_or("No active notebook")?;
+        let mut clean_new = new_name.trim().to_string();
+        if !clean_new.ends_with(".md") {
+            clean_new.push_str(".md");
+        }
+
+        let old_path = self.working_dir.join(nb_name).join(old_name);
+        let new_path = self.working_dir.join(nb_name).join(&clean_new);
+        if let Some(parent) = new_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
+        self.refresh_pages();
+        if let Some(pos) = self.pages.iter().position(|p| p == &clean_new) {
+            self.active_page_idx = pos;
+        }
+        Ok(clean_new)
+    }
+
+    /// Moves a page to another notebook.
+    pub fn move_page(&mut self, page_name: &str, target_notebook: &str) -> Result<String, String> {
+        let curr_nb = self.notebooks.get(self.active_notebook_idx).ok_or("No active notebook")?;
+        let old_path = self.working_dir.join(curr_nb).join(page_name);
+        let target_dir = self.working_dir.join(target_notebook);
+        fs::create_dir_all(&target_dir).map_err(|e| e.to_string())?;
+        let new_path = target_dir.join(page_name);
+        if let Some(parent) = new_path.parent() {
+            fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        }
+        fs::rename(&old_path, &new_path).map_err(|e| e.to_string())?;
+        self.refresh_pages();
+        Ok(format!("{}/{}", target_notebook, page_name))
+    }
+
+    /// Saves binary image bytes into the notebook's assets/ folder and returns relative Markdown path.
+    pub fn save_asset(&self, filename: &str, bytes: &[u8]) -> Result<String, String> {
+        let nb_dir = self.active_notebook_dir().ok_or("No active notebook")?;
+        let assets_dir = nb_dir.join("assets");
+        fs::create_dir_all(&assets_dir).map_err(|e| e.to_string())?;
+        let clean_fname = Path::new(filename)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("image.png");
+        let asset_path = assets_dir.join(clean_fname);
+        fs::write(&asset_path, bytes).map_err(|e| e.to_string())?;
+        Ok(format!("assets/{}", clean_fname))
+    }
+
+    /// Searches active notebook notes using the Trigram postings index.
+    pub fn search_notes(&self, query: &str) -> Vec<SearchHit> {
+        let clean_query = query.trim();
+        if clean_query.is_empty() {
+            return Vec::new();
+        }
+        let query_lower = clean_query.to_lowercase();
+        let query_bytes = query_lower.as_bytes();
+
+        let mut trigram_idx = TrigramIndex::new();
+        let mut file_contents = Vec::new();
+
+        let nb_dir = match self.active_notebook_dir() {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+
+        for (idx, page) in self.pages.iter().enumerate() {
+            let path = nb_dir.join(page);
+            let content = fs::read_to_string(&path).unwrap_or_default();
+            trigram_idx.index_doc(idx as u32, content.as_bytes());
+            file_contents.push((page.clone(), content));
+        }
+
+        let candidate_ids: Vec<u32> = if query_bytes.len() >= 3 {
+            trigram_idx.query_candidates(query_bytes)
+        } else {
+            (0..self.pages.len() as u32).collect()
+        };
+
+        let mut hits = Vec::new();
+        for doc_id in candidate_ids {
+            let idx = doc_id as usize;
+            if let Some((page_name, content)) = file_contents.get(idx) {
+                let mut byte_offset = 0;
+                for (line_idx, line) in content.lines().enumerate() {
+                    let line_lower = line.to_lowercase();
+                    if let Some(col) = line_lower.find(&query_lower) {
+                        hits.push(SearchHit {
+                            page_idx: idx,
+                            page_name: page_name.clone(),
+                            line_num: line_idx + 1,
+                            line_text: line.trim().to_string(),
+                            byte_offset: byte_offset + col,
+                        });
+                    }
+                    byte_offset += line.len() + 1;
+                }
+            }
+        }
+        hits
+    }
+
+    /// Returns all backlinks pointing to the specified target note.
+    pub fn get_backlinks(&self, target_page: &str) -> Vec<String> {
+        let nb_dir = match self.active_notebook_dir() {
+            Some(d) => d,
+            None => return Vec::new(),
+        };
+        let target_clean = target_page.trim_end_matches(".md");
+        let mut referring_notes = Vec::new();
+
+        for page in &self.pages {
+            if page == target_page {
+                continue;
+            }
+            let path = nb_dir.join(page);
+            if let Ok(content) = fs::read_to_string(&path) {
+                let link_pattern = format!("]({})", target_page);
+                let link_pattern_no_ext = format!("]({}.md)", target_clean);
+                let wiki_pattern = format!("[[{}]]", target_clean);
+                let wiki_pipe = format!("[[{}|", target_clean);
+                if content.contains(&link_pattern)
+                    || content.contains(&link_pattern_no_ext)
+                    || content.contains(&wiki_pattern)
+                    || content.contains(&wiki_pipe)
+                {
+                    referring_notes.push(page.clone());
+                }
+            }
+        }
+        referring_notes
+    }
+
+    /// Checks if the active page was modified externally on disk.
+    pub fn check_active_external_edit(&self, is_dirty: bool) -> ConflictResolution {
+        if let (Some(gen), Some(path)) = (self.last_saved_gen, self.active_file_path()) {
+            if let Ok(meta) = fs::metadata(&path) {
+                let mtime = meta.modified()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).map_err(|_| std::io::ErrorKind::Other.into()))
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                let size = meta.len();
+                check_external_edit(&gen, mtime, size, is_dirty)
+            } else {
+                ConflictResolution::UpToDate
+            }
+        } else {
+            ConflictResolution::UpToDate
+        }
     }
 
     /// Gets the current active notebook directory path.
@@ -267,23 +545,58 @@ impl NotebookManager {
         Some(self.working_dir.join(nb_name).join(page_name))
     }
 
-    /// Reads active document content bytes.
-    pub fn load_active_content(&self) -> Vec<u8> {
+    /// Reads active document content bytes and records its FileGeneration.
+    pub fn load_active_content(&mut self) -> Vec<u8> {
         if let Some(path) = self.active_file_path() {
             if let Ok(bytes) = fs::read(&path) {
+                let mtime = fs::metadata(&path)
+                    .and_then(|m| m.modified())
+                    .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                    .unwrap_or(0);
+                self.last_saved_gen = Some(FileGeneration::new(mtime, bytes.len() as u64, fnv1a_64(&bytes)));
                 return bytes;
             }
         }
         DEFAULT_WELCOME_DOC.to_vec()
     }
 
-    /// Saves document content bytes atomically to disk.
-    pub fn save_active_content(&self, data: &[u8]) -> Result<(), String> {
+    /// Saves document content bytes atomically to disk and updates FileGeneration.
+    pub fn save_active_content(&mut self, data: &[u8]) -> Result<(), String> {
         if let Some(path) = self.active_file_path() {
             let path_str = path.to_string_lossy();
-            save_atomic(&self.fs, &path_str, data).map_err(|e| e.to_string())
+            save_atomic(&self.fs, &path_str, data).map_err(|e| e.to_string())?;
+            let mtime = fs::metadata(&path)
+                .and_then(|m| m.modified())
+                .map(|t| t.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs())
+                .unwrap_or(0);
+            self.last_saved_gen = Some(FileGeneration::new(mtime, data.len() as u64, fnv1a_64(data)));
+            Ok(())
         } else {
             Err("No active page selected".into())
+        }
+    }
+}
+
+/// Recursively scans markdown files inside a directory, ignoring hidden directories.
+fn scan_markdown_files(root: &Path, rel_prefix: &str, out: &mut Vec<String>) {
+    if let Ok(entries) = fs::read_dir(root) {
+        for entry in entries.flatten() {
+            if let Ok(ft) = entry.file_type() {
+                let fname = entry.file_name().to_string_lossy().to_string();
+                if fname.starts_with('.') || fname == "assets" {
+                    continue;
+                }
+                let rel = if rel_prefix.is_empty() {
+                    fname.clone()
+                } else {
+                    format!("{}/{}", rel_prefix, fname)
+                };
+                if ft.is_dir() {
+                    scan_markdown_files(&entry.path(), &rel, out);
+                } else if ft.is_file() && fname.ends_with(".md") {
+                    out.push(rel);
+                }
+            }
         }
     }
 }

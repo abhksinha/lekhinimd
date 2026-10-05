@@ -32,9 +32,16 @@ pub enum KeyAction {
     SelectAll,
     NewNotebook,
     NewPage,
+    Find,
+    Rename,
+    DeleteNote,
+    ToggleOutline,
+    SortNotes,
+    Reload,
     F1,
     F2,
     F3,
+    F4,
     None,
 }
 
@@ -122,8 +129,8 @@ impl X11Window {
         // Value mask: CWBackPixel (0x02) | CWEventMask (0x800) = 0x802
         create_win.extend_from_slice(&0x802u32.to_le_bytes());
         create_win.extend_from_slice(&0xFF_1E_1E_1Eu32.to_le_bytes()); // Background color
-        // Event mask: KeyPress (0x01) | ButtonPress (0x04) | ButtonRelease (0x08) | PointerMotion (0x40) | Exposure (0x8000) | StructureNotify (0x20000)
-        create_win.extend_from_slice(&0x2804Du32.to_le_bytes());
+        // Event mask: KeyPress (0x01) | ButtonPress (0x04) | ButtonRelease (0x08) | PointerMotion (0x40) | Exposure (0x8000) | StructureNotify (0x20000) | FocusChange (0x200000)
+        create_win.extend_from_slice(&0x22804Du32.to_le_bytes());
 
         stream.write_all(&create_win).map_err(|e| e.to_string())?;
 
@@ -250,7 +257,7 @@ impl X11Window {
         // Determine active keysym based on shift modifier
         let ks = if shift { ks_shift } else { ks_unmod };
 
-        // Handle Control shortcuts (Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+S, Ctrl+A, Ctrl+N, Ctrl+P)
+        // Handle Control shortcuts (Ctrl+Z, Ctrl+Y, Ctrl+C, Ctrl+X, Ctrl+V, Ctrl+S, Ctrl+A, Ctrl+N, Ctrl+P, Ctrl+F, Ctrl+R, Ctrl+D, Ctrl+O)
         if ctrl {
             let base_char = match ks_unmod {
                 0x0041..=0x005A => char::from_u32(ks_unmod + 32),
@@ -268,6 +275,10 @@ impl X11Window {
                     'a' => return KeyAction::SelectAll,
                     'n' => return KeyAction::NewNotebook,
                     'p' => return KeyAction::NewPage,
+                    'f' => return KeyAction::Find,
+                    'r' => return if shift { KeyAction::Reload } else { KeyAction::Rename },
+                    'd' => return KeyAction::DeleteNote,
+                    'o' => return KeyAction::ToggleOutline,
                     _ => {}
                 }
             }
@@ -291,6 +302,7 @@ impl X11Window {
             0xFFBE => KeyAction::F1,
             0xFFBF => KeyAction::F2,
             0xFFC0 => KeyAction::F3,
+            0xFFC1 => KeyAction::F4,
             // Latin-1 / ASCII printable range
             0x0020..=0x007E | 0x00A0..=0x00FF => {
                 let mut ch = char::from_u32(ks).unwrap_or(' ');

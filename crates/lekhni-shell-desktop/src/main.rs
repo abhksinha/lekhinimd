@@ -12,8 +12,9 @@ use lekhni_layout::{compute_workspace_layout_with_mode, WorkspaceMode};
 use lekhni_md::parser::MarkdownParser;
 use lekhni_raster::canvas::Canvas;
 use lekhni_raster::damage::Rect;
-use lekhni_shell_desktop::workspace::{get_or_init_working_dir, NotebookManager, StdFs};
+use lekhni_shell_desktop::workspace::{get_or_init_working_dir, NotebookManager, OutlineItem, SearchHit, StdFs};
 use lekhni_shell_desktop::x11_presenter::{KeyAction, X11Window};
+use lekhni_store::external_edit::ConflictResolution;
 use lekhni_text::buffer::PieceTable;
 use lekhni_text::cursor::{Cursor, Selection};
 use lekhni_text::undo::UndoManager;
@@ -21,12 +22,22 @@ use lekhni_ui::preview::{ClickableTarget, PreviewRenderer};
 use lekhni_ui::selection::SelectionHandler;
 use lekhni_ui::theme::Theme;
 use lekhni_store::recovery::RecoveryJournal;
+use lekhni_store::notebook::PageSortOrder;
+use lekhni_shell::Clipboard;
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ActiveFocus {
     Sidebar,
     PageList,
     Editor,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum MiddlePaneMode {
+    Pages,
+    Outline,
+    Search,
+    Backlinks,
 }
 
 /// Linux desktop clipboard supporting system clipboard (xclip/wl-clipboard) and memory fallback.
@@ -38,6 +49,100 @@ impl DesktopClipboard {
     fn new() -> Self {
         Self { internal: String::new() }
     }
+
+    fn get_image_bytes(&self) -> Option<Vec<u8>> {
+        if let Ok(output) = std::process::Command::new("wl-paste").args(["-t", "image/png"]).output() {
+            if output.status.success() && output.stdout.len() > 8 && output.stdout.starts_with(b"\x89PNG") {
+                return Some(output.stdout);
+            }
+        }
+        if let Ok(output) = std::process::Command::new("xclip").args(["-selection", "clipboard", "-t", "image/png", "-o"]).output() {
+            if output.status.success() && output.stdout.len() > 8 && output.stdout.starts_with(b"\x89PNG") {
+                return Some(output.stdout);
+            }
+        }
+        None
+    }
+}
+
+fn check_clipboard_image_path(text: &str) -> Option<Vec<u8>> {
+    let trimmed = text.trim();
+    if trimmed.ends_with(".png") || trimmed.ends_with(".jpg") || trimmed.ends_with(".jpeg") || trimmed.ends_with(".webp") || trimmed.ends_with(".gif") {
+        let path = std::path::Path::new(trimmed);
+        if path.is_file() {
+            return std::fs::read(path).ok();
+        }
+    }
+    None
+}
+
+fn format_unix_timestamp(ts: u64) -> String {
+    if ts == 0 {
+        return "-".into();
+    }
+    let mut days = ts / 86400;
+    let time_of_day = ts % 86400;
+    let hours = time_of_day / 3600;
+    let minutes = (time_of_day % 3600) / 60;
+
+    let mut year = 1970;
+    loop {
+        let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+        let days_in_year = if is_leap { 366 } else { 365 };
+        if days >= days_in_year {
+            days -= days_in_year;
+            year += 1;
+        } else {
+            break;
+        }
+    }
+
+    let is_leap = (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0);
+    let month_days = [
+        31, if is_leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+    ];
+    let mut month = 1;
+    for &md in &month_days {
+        if days >= md {
+            days -= md;
+            month += 1;
+        } else {
+            break;
+        }
+    }
+    let day = days + 1;
+    format!("{:04}-{:02}-{:02} {:02}:{:02}", year, month, day, hours, minutes)
+}
+
+fn extract_outline(blocks: &lekhni_md::block::BlockTable, doc_bytes: &[u8]) -> Vec<OutlineItem> {
+    let mut items = Vec::new();
+    for i in 0..blocks.len() {
+        let kind = lekhni_md::block::BlockKind::from_u8(blocks.kind[i]);
+        let level = match kind {
+            lekhni_md::block::BlockKind::Heading1 => 1,
+            lekhni_md::block::BlockKind::Heading2 => 2,
+            lekhni_md::block::BlockKind::Heading3 => 3,
+            lekhni_md::block::BlockKind::Heading4 => 4,
+            lekhni_md::block::BlockKind::Heading5 => 5,
+            lekhni_md::block::BlockKind::Heading6 => 6,
+            _ => continue,
+        };
+        let start = blocks.start[i] as usize;
+        let end = blocks.end[i] as usize;
+        let heading_bytes = if start < end && end <= doc_bytes.len() {
+            &doc_bytes[start..end]
+        } else {
+            b""
+        };
+        let heading_str = core::str::from_utf8(heading_bytes).unwrap_or("");
+        let clean_title = heading_str.trim().trim_start_matches('#').trim().to_string();
+        items.push(OutlineItem {
+            level,
+            title: clean_title,
+            byte_offset: start,
+        });
+    }
+    items
 }
 
 impl lekhni_shell::Clipboard for DesktopClipboard {
@@ -250,6 +355,16 @@ fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x:
                 continue;
             }
         }
+        if bytes[i] == b'[' && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            if let Some(close_bb) = line[i + 2..].find("]]") {
+                let total_len = 2 + close_bb + 2;
+                let wiki_full = &line[i..i + total_len];
+                canvas.draw_text(wiki_full, x, y, 0xFF_98_C3_79);
+                x += (wiki_full.len() as i32) * 8;
+                i += total_len;
+                continue;
+            }
+        }
         if bytes[i] == b'[' {
             if let Some(close_b) = line[i + 1..].find(']') {
                 let rest = &line[i + 1 + close_b + 1..];
@@ -296,6 +411,11 @@ fn main() {
     let mut dragging_splitter: Option<usize> = None;
     let mut dragging_selection = false;
     let mut view_mode = WorkspaceMode::Split;
+    let mut middle_mode = MiddlePaneMode::Pages;
+    let mut search_query = String::new();
+    let mut search_hits: Vec<SearchHit> = Vec::new();
+    let mut sidebar_scroll_y: i32 = 0;
+    let mut page_list_scroll_y: i32 = 0;
 
     let theme = Theme::dark();
     let mut fb = vec![theme.bg_workspace; (width as usize) * (height as usize)];
@@ -313,7 +433,7 @@ fn main() {
     let mut scroll_y: i32 = 0;
     let mut is_dirty = false;
     let mut last_edit_time = Instant::now();
-    let mut status_msg = String::from("Ready. Phase 2 live: rich markdown, interactive links/tasks, split lock.");
+    let mut status_msg = String::from("Ready. Phase 3 live: nested notes, trigram search, outline, backlinks, image paste.");
 
     // Check for existing crash recovery journal on startup
     if let (Some(nb_path), Some(page_name)) = (nb_mgr.active_notebook_dir(), nb_mgr.pages.get(nb_mgr.active_page_idx)) {
@@ -345,23 +465,29 @@ fn main() {
     println!("Window mapped successfully! Window ID: 0x{:x}", win.window_id);
 
     // 4. Redraw pass
+    #[allow(clippy::too_many_arguments)]
     let redraw = |fb: &mut [u32],
-                      win_w: u16,
-                      win_h: u16,
-                      sb_w: i32,
-                      pl_w: i32,
-                      active_drag: Option<usize>,
-                      buffer: &PieceTable,
-                      parser: &mut MarkdownParser,
-                      nb_mgr: &NotebookManager,
-                      focus: ActiveFocus,
-                      cursor_pos: usize,
-                      selection: &Selection,
-                      editor_scroll_y: i32,
-                      scroll_y: i32,
-                      dirty: bool,
-                      mode: WorkspaceMode,
-                      status: &str| -> Vec<ClickableTarget> {
+                  win_w: u16,
+                  win_h: u16,
+                  sb_w: i32,
+                  pl_w: i32,
+                  active_drag: Option<usize>,
+                  buffer: &PieceTable,
+                  parser: &mut MarkdownParser,
+                  nb_mgr: &NotebookManager,
+                  focus: ActiveFocus,
+                  cursor_pos: usize,
+                  selection: &Selection,
+                  editor_scroll_y: i32,
+                  scroll_y: i32,
+                  sidebar_scroll_y: i32,
+                  page_list_scroll_y: i32,
+                  middle_mode: MiddlePaneMode,
+                  search_query: &str,
+                  search_hits: &[SearchHit],
+                  dirty: bool,
+                  mode: WorkspaceMode,
+                  status: &str| -> Vec<ClickableTarget> {
         let mut canvas = Canvas::new(fb, win_w as u32, win_h as u32);
         canvas.clear(theme.bg_workspace);
 
@@ -430,9 +556,15 @@ fn main() {
             canvas.draw_text("=== NOTEBOOKS ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_5C_63_70);
         }
 
-        let mut nb_y = layout.sidebar_rect.y + 34;
+        let sb_clip = Rect::new(layout.sidebar_rect.x, layout.sidebar_rect.y + 30, layout.sidebar_rect.width, layout.sidebar_rect.height - 30);
+        canvas.clip = sb_clip;
+
         for (i, nb) in nb_mgr.notebooks.iter().enumerate() {
-            if nb_y + 20 > layout.sidebar_rect.bottom() {
+            let nb_y = layout.sidebar_rect.y + 34 + (i as i32 * 24) - sidebar_scroll_y;
+            if nb_y + 24 < sb_clip.y {
+                continue;
+            }
+            if nb_y > sb_clip.bottom() {
                 break;
             }
             let is_active = i == nb_mgr.active_notebook_idx;
@@ -446,42 +578,171 @@ fn main() {
             } else {
                 canvas.draw_text(&format!("  {}", nb), layout.sidebar_rect.x + 10, nb_y, 0xFF_AB_B2_BF);
             }
-            nb_y += 24;
         }
+        canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
 
         // C. Splitter 1 (Draggable)
         let s1_color = if active_drag == Some(1) { 0xFF_00_7A_CC } else { theme.border_color };
         canvas.fill_rect(layout.splitter_1_rect, s1_color);
 
-        // D. Page List (Notes in Active Notebook)
+        // D. Middle Pane (Pages / Outline / Search / Backlinks)
         let pl_bg = if focus == ActiveFocus::PageList { 0xFF_21_25_2B } else { theme.bg_page_list };
         canvas.fill_rect(layout.page_list_rect, pl_bg);
 
+        // Top tab selector for middle pane
+        let pill_p = Rect::new(layout.page_list_rect.x + 4, layout.page_list_rect.y + 4, 46, 18);
+        let pill_o = Rect::new(layout.page_list_rect.x + 53, layout.page_list_rect.y + 4, 44, 18);
+        let pill_s = Rect::new(layout.page_list_rect.x + 100, layout.page_list_rect.y + 4, 44, 18);
+        let pill_b = Rect::new(layout.page_list_rect.x + 147, layout.page_list_rect.y + 4, 46, 18);
+
+        canvas.fill_rect(pill_p, if middle_mode == MiddlePaneMode::Pages { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("PAGES", pill_p.x + 4, pill_p.y + 2, if middle_mode == MiddlePaneMode::Pages { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.fill_rect(pill_o, if middle_mode == MiddlePaneMode::Outline { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("OUTL", pill_o.x + 6, pill_o.y + 2, if middle_mode == MiddlePaneMode::Outline { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.fill_rect(pill_s, if middle_mode == MiddlePaneMode::Search { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("SRCH", pill_s.x + 6, pill_s.y + 2, if middle_mode == MiddlePaneMode::Search { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
+        canvas.fill_rect(pill_b, if middle_mode == MiddlePaneMode::Backlinks { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
+        canvas.draw_text("LNKS", pill_b.x + 6, pill_b.y + 2, if middle_mode == MiddlePaneMode::Backlinks { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+
         if focus == ActiveFocus::PageList {
             canvas.fill_rect(Rect::new(layout.page_list_rect.x, layout.page_list_rect.y, layout.page_list_rect.width, 3), 0xFF_00_7A_CC);
-            canvas.fill_rect(Rect::new(layout.page_list_rect.x + 4, layout.page_list_rect.y + 6, layout.page_list_rect.width - 8, 20), 0xFF_2D_31_39);
-            canvas.draw_text("=== [ PAGES ] ===", layout.page_list_rect.x + 16, layout.page_list_rect.y + 8, 0xFF_61_AF_EF);
-        } else {
-            canvas.draw_text("=== PAGES ===", layout.page_list_rect.x + 16, layout.page_list_rect.y + 8, 0xFF_5C_63_70);
         }
 
-        let mut pg_y = layout.page_list_rect.y + 34;
-        for (i, page) in nb_mgr.pages.iter().enumerate() {
-            if pg_y + 20 > layout.page_list_rect.bottom() {
-                break;
+        let mut doc_bytes = vec![0u8; buffer.len()];
+        buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+
+        match middle_mode {
+            MiddlePaneMode::Pages => {
+                // Sub-toolbar: [+ NEW] [REN] [DEL] [SORT:...]
+                let sort_label = match nb_mgr.sort_order {
+                    PageSortOrder::NameAsc => "A-Z",
+                    PageSortOrder::NameDesc => "Z-A",
+                    PageSortOrder::DateModifiedDesc => "NEW",
+                    PageSortOrder::DateModifiedAsc => "OLD",
+                };
+                canvas.draw_text("+ NEW", layout.page_list_rect.x + 6, layout.page_list_rect.y + 28, 0xFF_98_C3_79);
+                canvas.draw_text("REN", layout.page_list_rect.x + 56, layout.page_list_rect.y + 28, 0xFF_E5_C0_7B);
+                canvas.draw_text("DEL", layout.page_list_rect.x + 90, layout.page_list_rect.y + 28, 0xFF_E0_6C_75);
+                canvas.draw_text(&format!("SORT:{}", sort_label), layout.page_list_rect.x + 124, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
+
+                let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 46, layout.page_list_rect.width, layout.page_list_rect.height - 46);
+                canvas.clip = list_clip;
+
+                for (i, page) in nb_mgr.pages.iter().enumerate() {
+                    let pg_y = layout.page_list_rect.y + 48 + (i as i32 * 36) - page_list_scroll_y;
+                    if pg_y + 36 < list_clip.y {
+                        continue;
+                    }
+                    if pg_y > list_clip.bottom() {
+                        break;
+                    }
+                    let is_active = i == nb_mgr.active_page_idx;
+                    if is_active {
+                        canvas.fill_rect(
+                            Rect::new(layout.page_list_rect.x + 4, pg_y, layout.page_list_rect.width - 8, 34),
+                            if focus == ActiveFocus::PageList { 0xFF_09_47_71 } else { 0xFF_2C_31_3C },
+                        );
+                        canvas.fill_rect(Rect::new(layout.page_list_rect.x + 4, pg_y, 3, 34), 0xFF_00_7A_CC);
+                    }
+                    // Title line
+                    let title = nb_mgr.page_titles.get(i).map(|s| s.as_str()).unwrap_or(page.as_str());
+                    let prefix = if is_active { "* " } else { "  " };
+                    let display_title = format!("{}{}", prefix, title);
+                    canvas.draw_text(&display_title, layout.page_list_rect.x + 8, pg_y + 2, if is_active { 0xFF_FF_FF_FF } else { 0xFF_D4_D4_D4 });
+
+                    // Subtitle line: formatted mtime and word count
+                    let mtime = nb_mgr.page_mtimes.get(i).copied().unwrap_or(0);
+                    let words = nb_mgr.page_words.get(i).copied().unwrap_or(0);
+                    let sub_str = format!("  {} | {}w", format_unix_timestamp(mtime), words);
+                    canvas.draw_text(&sub_str, layout.page_list_rect.x + 8, pg_y + 18, 0xFF_5C_63_70);
+                }
+                canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
             }
-            let is_active = i == nb_mgr.active_page_idx;
-            if is_active {
-                canvas.fill_rect(
-                    Rect::new(layout.page_list_rect.x + 4, pg_y - 2, layout.page_list_rect.width - 8, 22),
-                    if focus == ActiveFocus::PageList { 0xFF_09_47_71 } else { 0xFF_2C_31_3C },
-                );
-                canvas.fill_rect(Rect::new(layout.page_list_rect.x + 4, pg_y - 2, 3, 22), 0xFF_00_7A_CC);
-                canvas.draw_text(&format!("* {}", page), layout.page_list_rect.x + 10, pg_y, 0xFF_FF_FF_FF);
-            } else {
-                canvas.draw_text(&format!("  {}", page), layout.page_list_rect.x + 10, pg_y, 0xFF_AB_B2_BF);
+            MiddlePaneMode::Outline => {
+                canvas.draw_text("=== OUTLINE ===", layout.page_list_rect.x + 10, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
+
+                let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 46, layout.page_list_rect.width, layout.page_list_rect.height - 46);
+                canvas.clip = list_clip;
+
+                parser.parse_full(&doc_bytes);
+                let outline_items = extract_outline(&parser.blocks, &doc_bytes);
+
+                if outline_items.is_empty() {
+                    canvas.draw_text("  (No headings found)", layout.page_list_rect.x + 10, layout.page_list_rect.y + 54, 0xFF_5C_63_70);
+                } else {
+                    for (i, item) in outline_items.iter().enumerate() {
+                        let row_y = layout.page_list_rect.y + 48 + (i as i32 * 24) - page_list_scroll_y;
+                        if row_y + 24 < list_clip.y {
+                            continue;
+                        }
+                        if row_y > list_clip.bottom() {
+                            break;
+                        }
+                        let indent = ((item.level.saturating_sub(1)) as i32) * 8;
+                        let tag = format!("H{}", item.level);
+                        canvas.draw_text(&tag, layout.page_list_rect.x + 10 + indent, row_y, 0xFF_4E_C9_B0);
+                        canvas.draw_text(&item.title, layout.page_list_rect.x + 32 + indent, row_y, 0xFF_D4_D4_D4);
+                    }
+                }
+                canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
             }
-            pg_y += 24;
+            MiddlePaneMode::Search => {
+                let query_box = Rect::new(layout.page_list_rect.x + 6, layout.page_list_rect.y + 26, layout.page_list_rect.width - 12, 20);
+                canvas.fill_rect(query_box, 0xFF_18_1A_1F);
+                let q_str = format!("Find: {}|", search_query);
+                canvas.draw_text(&q_str, query_box.x + 6, query_box.y + 2, 0xFF_E5_C0_7B);
+
+                let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 50, layout.page_list_rect.width, layout.page_list_rect.height - 50);
+                canvas.clip = list_clip;
+
+                if search_query.is_empty() {
+                    canvas.draw_text("  Type to search notes...", layout.page_list_rect.x + 8, layout.page_list_rect.y + 56, 0xFF_5C_63_70);
+                } else if search_hits.is_empty() {
+                    canvas.draw_text("  No matches found.", layout.page_list_rect.x + 8, layout.page_list_rect.y + 56, 0xFF_E0_6C_75);
+                } else {
+                    for (i, hit) in search_hits.iter().enumerate() {
+                        let row_y = layout.page_list_rect.y + 52 + (i as i32 * 36) - page_list_scroll_y;
+                        if row_y + 36 < list_clip.y {
+                            continue;
+                        }
+                        if row_y > list_clip.bottom() {
+                            break;
+                        }
+                        let header = format!("{}:{}", hit.page_name, hit.line_num);
+                        canvas.draw_text(&header, layout.page_list_rect.x + 8, row_y + 2, 0xFF_61_AF_EF);
+                        canvas.draw_text(&hit.line_text, layout.page_list_rect.x + 8, row_y + 18, 0xFF_D4_D4_D4);
+                    }
+                }
+                canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
+            }
+            MiddlePaneMode::Backlinks => {
+                canvas.draw_text("=== BACKLINKS ===", layout.page_list_rect.x + 10, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
+
+                let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 46, layout.page_list_rect.width, layout.page_list_rect.height - 46);
+                canvas.clip = list_clip;
+
+                let cur_page = nb_mgr.pages.get(nb_mgr.active_page_idx).map(|s| s.as_str()).unwrap_or("");
+                let bl = nb_mgr.get_backlinks(cur_page);
+
+                if bl.is_empty() {
+                    canvas.draw_text("  (No backlinks found)", layout.page_list_rect.x + 10, layout.page_list_rect.y + 54, 0xFF_5C_63_70);
+                } else {
+                    for (i, ref_note) in bl.iter().enumerate() {
+                        let row_y = layout.page_list_rect.y + 48 + (i as i32 * 24) - page_list_scroll_y;
+                        if row_y + 24 < list_clip.y {
+                            continue;
+                        }
+                        if row_y > list_clip.bottom() {
+                            break;
+                        }
+                        canvas.draw_text(&format!("<- {}", ref_note), layout.page_list_rect.x + 10, row_y, 0xFF_98_C3_79);
+                    }
+                }
+                canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
+            }
         }
 
         // E. Splitter 2 (Draggable)
@@ -617,7 +878,8 @@ fn main() {
     let mut current_click_targets = redraw(
         &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
         &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-        editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
+        editor_scroll_y, scroll_y, sidebar_scroll_y, page_list_scroll_y,
+        middle_mode, &search_query, &search_hits, is_dirty, view_mode, &status_msg,
     );
     let _ = win.present_framebuffer(&fb, width, height);
 
@@ -638,6 +900,8 @@ fn main() {
 
     // 6. Interactive Event Loop with short timeout for autosave
     loop {
+        let mut needs_redraw = false;
+
         // Handle optional stdin input from piped terminal
         if let Ok(ch) = rx_stdin.try_recv() {
             if ch == 27 {
@@ -653,6 +917,7 @@ fn main() {
                     is_dirty = true;
                     last_edit_time = Instant::now();
                     status_msg = "Edited".into();
+                    needs_redraw = true;
                 }
             } else if ch == b'\n' || ch == b'\r' {
                 undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
@@ -662,6 +927,7 @@ fn main() {
                 is_dirty = true;
                 last_edit_time = Instant::now();
                 status_msg = "Edited".into();
+                needs_redraw = true;
             } else if (32..127).contains(&ch) {
                 undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
                 buffer.insert(cursor_pos, &[ch]);
@@ -670,13 +936,8 @@ fn main() {
                 is_dirty = true;
                 last_edit_time = Instant::now();
                 status_msg = "Edited".into();
+                needs_redraw = true;
             }
-            current_click_targets = redraw(
-                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-            );
-            let _ = win.present_framebuffer(&fb, width, height);
         }
 
         // Autosave check: if dirty and 1.5s passed without further edits, flush to disk
@@ -689,12 +950,7 @@ fn main() {
                 }
                 is_dirty = false;
                 status_msg = "Autosaved note atomically".into();
-                current_click_targets = redraw(
-                    &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                    &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                    editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                );
-                let _ = win.present_framebuffer(&fb, width, height);
+                needs_redraw = true;
             }
         }
 
@@ -703,6 +959,26 @@ fn main() {
             Ok(Some(event)) => {
                 let event_type = event[0] & 0x7F;
                 match event_type {
+                    // FocusIn event (opcode 9): check external modification on focus!
+                    9 => {
+                        match nb_mgr.check_active_external_edit(is_dirty) {
+                            ConflictResolution::ReloadSilently => {
+                                doc_memory = nb_mgr.load_active_content();
+                                buffer = PieceTable::new(&doc_memory);
+                                cursor_pos = cursor_pos.min(buffer.len());
+                                selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                undo_mgr.clear();
+                                is_dirty = false;
+                                status_msg = "External change detected: reloaded silently.".into();
+                                needs_redraw = true;
+                            }
+                            ConflictResolution::PromptConflict => {
+                                status_msg = "CONFLICT: Note modified on disk! [Ctrl+Shift+R] Reload, [Ctrl+S] Overwrite.".into();
+                                needs_redraw = true;
+                            }
+                            ConflictResolution::UpToDate => {}
+                        }
+                    }
                     // Expose event (opcode 12): re-present window framebuffer
                     12 => {
                         let _ = win.present_framebuffer(&fb, width, height);
@@ -718,12 +994,7 @@ fn main() {
                             win.height = new_h;
                             fb.resize((width as usize) * (height as usize), theme.bg_workspace);
                             status_msg = format!("Resized to {}x{}", width, height);
-                            current_click_targets = redraw(
-                                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                            );
-                            let _ = win.present_framebuffer(&fb, width, height);
+                            needs_redraw = true;
                         }
                     }
                     // MotionNotify event (opcode 6): Splitter & selection drag tracking!
@@ -737,12 +1008,7 @@ fn main() {
                             } else if dragged == 2 {
                                 page_list_w = (mouse_x - sidebar_w).clamp(100, (width as i32) / 3);
                             }
-                            current_click_targets = redraw(
-                                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                            );
-                            let _ = win.present_framebuffer(&fb, width, height);
+                            needs_redraw = true;
                         } else if dragging_selection {
                             let layout = compute_workspace_layout_with_mode(
                                 width as i32, height as i32, sidebar_w, page_list_w, 3, view_mode, 28, 24,
@@ -755,12 +1021,7 @@ fn main() {
                             let new_off = offset_from_line_col(&buffer, target_line, target_col);
                             selection.head = Cursor::new(new_off, target_line, target_col);
                             cursor_pos = new_off;
-                            current_click_targets = redraw(
-                                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                            );
-                            let _ = win.present_framebuffer(&fb, width, height);
+                            needs_redraw = true;
                         }
                     }
                     // ButtonRelease event (opcode 5)
@@ -768,12 +1029,7 @@ fn main() {
                         if dragging_splitter.is_some() || dragging_selection {
                             dragging_splitter = None;
                             dragging_selection = false;
-                            current_click_targets = redraw(
-                                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                            );
-                            let _ = win.present_framebuffer(&fb, width, height);
+                            needs_redraw = true;
                         }
                     }
                     // ButtonPress event (opcode 4): Mouse clicks and scroll wheel
@@ -791,9 +1047,11 @@ fn main() {
                             if (mouse_x - layout.splitter_1_rect.x).abs() <= 5 {
                                 dragging_splitter = Some(1);
                                 status_msg = "Dragging Sidebar Splitter".into();
+                                needs_redraw = true;
                             } else if (mouse_x - layout.splitter_2_rect.x).abs() <= 5 {
                                 dragging_splitter = Some(2);
                                 status_msg = "Dragging Page List Splitter".into();
+                                needs_redraw = true;
                             } else if mouse_y < 28 {
                                 // Click in top header focus or mode pills
                                 if (80..180).contains(&mouse_x) {
@@ -815,9 +1073,10 @@ fn main() {
                                     view_mode = WorkspaceMode::PreviewOnly;
                                     status_msg = "Mode: Preview Only".into();
                                 }
+                                needs_redraw = true;
                             } else if mouse_x < layout.sidebar_rect.right() {
                                 focus = ActiveFocus::Sidebar;
-                                let clicked_row = (mouse_y - (layout.sidebar_rect.y + 34)) / 24;
+                                let clicked_row = (mouse_y - (layout.sidebar_rect.y + 34) + sidebar_scroll_y) / 24;
                                 if clicked_row >= 0 && (clicked_row as usize) < nb_mgr.notebooks.len() {
                                     if is_dirty {
                                         let mut doc_bytes = vec![0u8; buffer.len()];
@@ -836,27 +1095,167 @@ fn main() {
                                     selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
                                     undo_mgr.clear();
                                     status_msg = format!("Selected notebook '{}'", nb_mgr.notebooks[nb_mgr.active_notebook_idx]);
+                                    needs_redraw = true;
                                 }
                             } else if mouse_x < layout.page_list_rect.right() {
                                 focus = ActiveFocus::PageList;
-                                let clicked_row = (mouse_y - (layout.page_list_rect.y + 34)) / 24;
-                                if clicked_row >= 0 && (clicked_row as usize) < nb_mgr.pages.len() {
-                                    if is_dirty {
-                                        let mut doc_bytes = vec![0u8; buffer.len()];
-                                        buffer.copy_range(0, buffer.len(), &mut doc_bytes);
-                                        let _ = nb_mgr.save_active_content(&doc_bytes);
-                                        if let (Some(nb_path), Some(page_name)) = (nb_mgr.active_notebook_dir(), nb_mgr.pages.get(nb_mgr.active_page_idx)) {
-                                            let _ = RecoveryJournal::discard_snapshot(&StdFs, &nb_path.display().to_string(), page_name);
-                                        }
-                                        is_dirty = false;
+                                // Check tab pills (y: +4..+22)
+                                if mouse_y >= layout.page_list_rect.y + 4 && mouse_y <= layout.page_list_rect.y + 22 {
+                                    if mouse_x < layout.page_list_rect.x + 50 {
+                                        middle_mode = MiddlePaneMode::Pages;
+                                        status_msg = "Switched to Pages view".into();
+                                    } else if mouse_x < layout.page_list_rect.x + 97 {
+                                        middle_mode = MiddlePaneMode::Outline;
+                                        status_msg = "Switched to Outline view".into();
+                                    } else if mouse_x < layout.page_list_rect.x + 144 {
+                                        middle_mode = MiddlePaneMode::Search;
+                                        status_msg = "Search: type query, click hit to jump".into();
+                                    } else {
+                                        middle_mode = MiddlePaneMode::Backlinks;
+                                        status_msg = "Switched to Backlinks view".into();
                                     }
-                                    nb_mgr.active_page_idx = clicked_row as usize;
-                                    doc_memory = nb_mgr.load_active_content();
-                                    buffer = PieceTable::new(&doc_memory);
-                                    cursor_pos = buffer.len();
-                                    selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
-                                    undo_mgr.clear();
-                                    status_msg = format!("Selected page '{}'", nb_mgr.pages[nb_mgr.active_page_idx]);
+                                    needs_redraw = true;
+                                } else {
+                                    match middle_mode {
+                                        MiddlePaneMode::Pages => {
+                                            // Check sub-actions toolbar (y: +26..+44)
+                                            if mouse_y >= layout.page_list_rect.y + 26 && mouse_y <= layout.page_list_rect.y + 44 {
+                                                if mouse_x < layout.page_list_rect.x + 52 {
+                                                    // [+ NEW]
+                                                    if is_dirty {
+                                                        let mut doc_bytes = vec![0u8; buffer.len()];
+                                                        buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                                        let _ = nb_mgr.save_active_content(&doc_bytes);
+                                                    }
+                                                    let new_page_name = format!("note_{}.md", nb_mgr.pages.len() + 1);
+                                                    nb_mgr.create_page(&new_page_name, b"# New Note\n\nStart typing...\n");
+                                                    doc_memory = nb_mgr.load_active_content();
+                                                    buffer = PieceTable::new(&doc_memory);
+                                                    cursor_pos = buffer.len();
+                                                    selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                                    undo_mgr.clear();
+                                                    is_dirty = false;
+                                                    status_msg = format!("Created & opened page '{}'", new_page_name);
+                                                    needs_redraw = true;
+                                                } else if mouse_x < layout.page_list_rect.x + 86 {
+                                                    // [REN]
+                                                    let cur = nb_mgr.pages[nb_mgr.active_page_idx].clone();
+                                                    let new_n = format!("renamed_{}", cur);
+                                                    if let Ok(renamed) = nb_mgr.rename_page(&cur, &new_n) {
+                                                        status_msg = format!("Renamed note to '{}'", renamed);
+                                                        needs_redraw = true;
+                                                    }
+                                                } else if mouse_x < layout.page_list_rect.x + 120 {
+                                                    // [DEL]
+                                                    if nb_mgr.pages.len() > 1 {
+                                                        let cur = nb_mgr.pages[nb_mgr.active_page_idx].clone();
+                                                        let _ = nb_mgr.delete_page(&cur);
+                                                        doc_memory = nb_mgr.load_active_content();
+                                                        buffer = PieceTable::new(&doc_memory);
+                                                        cursor_pos = 0;
+                                                        selection = Selection::collapsed(Cursor::new(0, 0, 0));
+                                                        undo_mgr.clear();
+                                                        is_dirty = false;
+                                                        status_msg = format!("Deleted note '{}'", cur);
+                                                        needs_redraw = true;
+                                                    }
+                                                } else {
+                                                    // [SORT]
+                                                    let s = nb_mgr.toggle_sort();
+                                                    status_msg = format!("Notes sorted by {}", s);
+                                                    needs_redraw = true;
+                                                }
+                                            } else if mouse_y >= layout.page_list_rect.y + 48 {
+                                                let clicked_row = (mouse_y - (layout.page_list_rect.y + 48) + page_list_scroll_y) / 36;
+                                                if clicked_row >= 0 && (clicked_row as usize) < nb_mgr.pages.len() {
+                                                    if is_dirty {
+                                                        let mut doc_bytes = vec![0u8; buffer.len()];
+                                                        buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                                        let _ = nb_mgr.save_active_content(&doc_bytes);
+                                                        if let (Some(nb_path), Some(page_name)) = (nb_mgr.active_notebook_dir(), nb_mgr.pages.get(nb_mgr.active_page_idx)) {
+                                                            let _ = RecoveryJournal::discard_snapshot(&StdFs, &nb_path.display().to_string(), page_name);
+                                                        }
+                                                        is_dirty = false;
+                                                    }
+                                                    nb_mgr.active_page_idx = clicked_row as usize;
+                                                    doc_memory = nb_mgr.load_active_content();
+                                                    buffer = PieceTable::new(&doc_memory);
+                                                    cursor_pos = buffer.len();
+                                                    selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                                    undo_mgr.clear();
+                                                    status_msg = format!("Selected page '{}'", nb_mgr.pages[nb_mgr.active_page_idx]);
+                                                    needs_redraw = true;
+                                                }
+                                            }
+                                        }
+                                        MiddlePaneMode::Outline => {
+                                            if mouse_y >= layout.page_list_rect.y + 48 {
+                                                let clicked_row = (mouse_y - (layout.page_list_rect.y + 48) + page_list_scroll_y) / 24;
+                                                let mut doc_bytes = vec![0u8; buffer.len()];
+                                                buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                                parser.parse_full(&doc_bytes);
+                                                let outline_items = extract_outline(&parser.blocks, &doc_bytes);
+                                                if clicked_row >= 0 && (clicked_row as usize) < outline_items.len() {
+                                                    cursor_pos = outline_items[clicked_row as usize].byte_offset;
+                                                    selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                                    focus = ActiveFocus::Editor;
+                                                    status_msg = format!("Jumped to heading '{}'", outline_items[clicked_row as usize].title);
+                                                    needs_redraw = true;
+                                                }
+                                            }
+                                        }
+                                        MiddlePaneMode::Search => {
+                                            if mouse_y >= layout.page_list_rect.y + 52 {
+                                                let clicked_row = (mouse_y - (layout.page_list_rect.y + 52) + page_list_scroll_y) / 36;
+                                                if clicked_row >= 0 && (clicked_row as usize) < search_hits.len() {
+                                                    let hit = &search_hits[clicked_row as usize];
+                                                    if hit.page_idx != nb_mgr.active_page_idx {
+                                                        if is_dirty {
+                                                            let mut doc_bytes = vec![0u8; buffer.len()];
+                                                            buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                                            let _ = nb_mgr.save_active_content(&doc_bytes);
+                                                        }
+                                                        nb_mgr.active_page_idx = hit.page_idx;
+                                                        doc_memory = nb_mgr.load_active_content();
+                                                        buffer = PieceTable::new(&doc_memory);
+                                                        undo_mgr.clear();
+                                                        is_dirty = false;
+                                                    }
+                                                    cursor_pos = hit.byte_offset.min(buffer.len());
+                                                    selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                                    focus = ActiveFocus::Editor;
+                                                    status_msg = format!("Jumped to search hit in {}", hit.page_name);
+                                                    needs_redraw = true;
+                                                }
+                                            }
+                                        }
+                                        MiddlePaneMode::Backlinks => {
+                                            if mouse_y >= layout.page_list_rect.y + 48 {
+                                                let clicked_row = (mouse_y - (layout.page_list_rect.y + 48) + page_list_scroll_y) / 24;
+                                                let cur_page = nb_mgr.pages.get(nb_mgr.active_page_idx).map(|s| s.as_str()).unwrap_or("");
+                                                let bl = nb_mgr.get_backlinks(cur_page);
+                                                if clicked_row >= 0 && (clicked_row as usize) < bl.len() {
+                                                    let target_note = &bl[clicked_row as usize];
+                                                    if let Some(pos) = nb_mgr.pages.iter().position(|p| p == target_note) {
+                                                        if is_dirty {
+                                                            let mut doc_bytes = vec![0u8; buffer.len()];
+                                                            buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                                            let _ = nb_mgr.save_active_content(&doc_bytes);
+                                                        }
+                                                        nb_mgr.active_page_idx = pos;
+                                                        doc_memory = nb_mgr.load_active_content();
+                                                        buffer = PieceTable::new(&doc_memory);
+                                                        cursor_pos = 0;
+                                                        selection = Selection::collapsed(Cursor::new(0, 0, 0));
+                                                        undo_mgr.clear();
+                                                        is_dirty = false;
+                                                        status_msg = format!("Navigated to backlink source '{}'", target_note);
+                                                        needs_redraw = true;
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             } else if layout.editor_rect.width > 0 && mouse_x < layout.editor_rect.right() {
                                 focus = ActiveFocus::Editor;
@@ -870,6 +1269,7 @@ fn main() {
                                 selection = Selection::collapsed(Cursor::new(off, target_line, target_col));
                                 dragging_selection = true;
                                 status_msg = "Focused Editor".into();
+                                needs_redraw = true;
                             } else if layout.preview_rect.width > 0 && mouse_x >= layout.preview_rect.x {
                                 // Hit-test interactive preview click targets (links, task checkboxes, headings)
                                 let mut handled_target = false;
@@ -877,9 +1277,37 @@ fn main() {
                                     match target {
                                         ClickableTarget::Link { rect, url } => {
                                             if rect.contains(mouse_x, mouse_y) {
-                                                let _ = std::process::Command::new("xdg-open").arg(url).spawn();
-                                                status_msg = format!("Opened link: {}", url);
+                                                if url.starts_with("http://") || url.starts_with("https://") {
+                                                    let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+                                                    status_msg = format!("Opened web link: {}", url);
+                                                } else {
+                                                    // Internal note link or wikilink
+                                                    let target_clean = url.trim_end_matches(".md");
+                                                    if let Some(pos) = nb_mgr.pages.iter().position(|p| {
+                                                        p == url
+                                                            || p == &format!("{}.md", target_clean)
+                                                            || p.ends_with(&format!("/{}", url))
+                                                            || p.ends_with(&format!("/{}.md", target_clean))
+                                                    }) {
+                                                        if is_dirty {
+                                                            let mut doc_bytes = vec![0u8; buffer.len()];
+                                                            buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                                            let _ = nb_mgr.save_active_content(&doc_bytes);
+                                                        }
+                                                        nb_mgr.active_page_idx = pos;
+                                                        doc_memory = nb_mgr.load_active_content();
+                                                        buffer = PieceTable::new(&doc_memory);
+                                                        cursor_pos = 0;
+                                                        selection = Selection::collapsed(Cursor::new(0, 0, 0));
+                                                        undo_mgr.clear();
+                                                        is_dirty = false;
+                                                        status_msg = format!("Navigated to note '{}'", nb_mgr.pages[pos]);
+                                                    } else {
+                                                        status_msg = format!("Note not found: {}", url);
+                                                    }
+                                                }
                                                 handled_target = true;
+                                                needs_redraw = true;
                                                 break;
                                             }
                                         }
@@ -898,6 +1326,7 @@ fn main() {
                                                         last_edit_time = Instant::now();
                                                         status_msg = if *is_checked { "Unchecked task" } else { "Checked task" }.into();
                                                         handled_target = true;
+                                                        needs_redraw = true;
                                                         break;
                                                     }
                                                 }
@@ -910,6 +1339,7 @@ fn main() {
                                                 focus = ActiveFocus::Editor;
                                                 status_msg = "Navigated editor to heading".into();
                                                 handled_target = true;
+                                                needs_redraw = true;
                                                 break;
                                             }
                                         }
@@ -917,17 +1347,16 @@ fn main() {
                                 }
                                 if !handled_target {
                                     status_msg = "Preview Viewport".into();
+                                    needs_redraw = true;
                                 }
                             }
-                            current_click_targets = redraw(
-                                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                            );
-                            let _ = win.present_framebuffer(&fb, width, height);
                         } else if button == 4 {
-                            // Scroll wheel UP with synchronized scroll locking
-                            if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
+                            // Scroll wheel UP
+                            if mouse_x < layout.sidebar_rect.right() {
+                                sidebar_scroll_y = (sidebar_scroll_y - 24).max(0);
+                            } else if mouse_x < layout.page_list_rect.right() {
+                                page_list_scroll_y = (page_list_scroll_y - 24).max(0);
+                            } else if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
                                 editor_scroll_y = (editor_scroll_y - 24).max(0);
                                 let top_line = (editor_scroll_y / 18) as usize;
                                 let off = buffer.line_to_offset(top_line);
@@ -946,15 +1375,14 @@ fn main() {
                                     editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * 18;
                                 }
                             }
-                            current_click_targets = redraw(
-                                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                            );
-                            let _ = win.present_framebuffer(&fb, width, height);
+                            needs_redraw = true;
                         } else if button == 5 {
-                            // Scroll wheel DOWN with synchronized scroll locking
-                            if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
+                            // Scroll wheel DOWN
+                            if mouse_x < layout.sidebar_rect.right() {
+                                sidebar_scroll_y += 24;
+                            } else if mouse_x < layout.page_list_rect.right() {
+                                page_list_scroll_y += 24;
+                            } else if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
                                 editor_scroll_y += 24;
                                 let top_line = (editor_scroll_y / 18) as usize;
                                 let off = buffer.line_to_offset(top_line);
@@ -973,12 +1401,7 @@ fn main() {
                                     editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * 18;
                                 }
                             }
-                            current_click_targets = redraw(
-                                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                                editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                            );
-                            let _ = win.present_framebuffer(&fb, width, height);
+                            needs_redraw = true;
                         }
                     }
                     // KeyPress event (opcode 2): Real X11 Keyboard & Unicode Engine!
@@ -989,8 +1412,15 @@ fn main() {
 
                         match action {
                             KeyAction::Escape => {
-                                println!("\nEscape pressed. Exiting Lekhni.");
-                                break;
+                                if focus == ActiveFocus::PageList && middle_mode == MiddlePaneMode::Search {
+                                    search_query.clear();
+                                    search_hits.clear();
+                                    middle_mode = MiddlePaneMode::Pages;
+                                    status_msg = "Cleared search".into();
+                                } else {
+                                    println!("\nEscape pressed. Exiting Lekhni.");
+                                    break;
+                                }
                             }
                             KeyAction::F1 => {
                                 view_mode = WorkspaceMode::Split;
@@ -1003,6 +1433,56 @@ fn main() {
                             KeyAction::F3 => {
                                 view_mode = WorkspaceMode::PreviewOnly;
                                 status_msg = "Switched to Preview Only".into();
+                            }
+                            KeyAction::F4 | KeyAction::SortNotes => {
+                                let s = nb_mgr.toggle_sort();
+                                status_msg = format!("Notes sorted by {}", s);
+                            }
+                            KeyAction::Find => {
+                                middle_mode = MiddlePaneMode::Search;
+                                focus = ActiveFocus::PageList;
+                                status_msg = "Search: type query, click hit to jump".into();
+                            }
+                            KeyAction::ToggleOutline => {
+                                middle_mode = if middle_mode == MiddlePaneMode::Outline {
+                                    MiddlePaneMode::Pages
+                                } else {
+                                    MiddlePaneMode::Outline
+                                };
+                                status_msg = if middle_mode == MiddlePaneMode::Outline {
+                                    "Switched to Outline view".into()
+                                } else {
+                                    "Switched to Pages view".into()
+                                };
+                            }
+                            KeyAction::Rename => {
+                                let cur = nb_mgr.pages[nb_mgr.active_page_idx].clone();
+                                let new_n = format!("renamed_{}", cur);
+                                if let Ok(renamed) = nb_mgr.rename_page(&cur, &new_n) {
+                                    status_msg = format!("Renamed note to '{}'", renamed);
+                                }
+                            }
+                            KeyAction::DeleteNote => {
+                                if nb_mgr.pages.len() > 1 {
+                                    let cur = nb_mgr.pages[nb_mgr.active_page_idx].clone();
+                                    let _ = nb_mgr.delete_page(&cur);
+                                    doc_memory = nb_mgr.load_active_content();
+                                    buffer = PieceTable::new(&doc_memory);
+                                    cursor_pos = 0;
+                                    selection = Selection::collapsed(Cursor::new(0, 0, 0));
+                                    undo_mgr.clear();
+                                    is_dirty = false;
+                                    status_msg = format!("Deleted note '{}'", cur);
+                                }
+                            }
+                            KeyAction::Reload => {
+                                doc_memory = nb_mgr.load_active_content();
+                                buffer = PieceTable::new(&doc_memory);
+                                cursor_pos = cursor_pos.min(buffer.len());
+                                selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                undo_mgr.clear();
+                                is_dirty = false;
+                                status_msg = "Reloaded note from disk.".into();
                             }
                             KeyAction::Tab => {
                                 focus = match focus {
@@ -1100,11 +1580,58 @@ fn main() {
                             }
                             KeyAction::Paste => {
                                 if focus == ActiveFocus::Editor {
-                                    SelectionHandler::paste_clipboard(&mut selection, &mut buffer, &mut undo_mgr, &clipboard);
-                                    cursor_pos = selection.head.byte_offset;
-                                    is_dirty = true;
-                                    last_edit_time = Instant::now();
-                                    status_msg = "Pasted from clipboard".into();
+                                    let mut image_saved = false;
+                                    if let Some(img_bytes) = clipboard.get_image_bytes() {
+                                        let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                                        let fname = format!("img_{}.png", ts);
+                                        if let Ok(rel_path) = nb_mgr.save_asset(&fname, &img_bytes) {
+                                            undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
+                                            if !selection.is_collapsed() {
+                                                let (s, e) = selection.byte_range();
+                                                buffer.delete(s, e - s);
+                                                cursor_pos = s;
+                                            }
+                                            let tag = format!("![image]({})\n", rel_path);
+                                            buffer.insert(cursor_pos, tag.as_bytes());
+                                            cursor_pos += tag.len();
+                                            selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                            is_dirty = true;
+                                            last_edit_time = Instant::now();
+                                            status_msg = format!("Pasted image into {}", rel_path);
+                                            image_saved = true;
+                                        }
+                                    }
+                                    if !image_saved {
+                                        if let Some(clip_text) = clipboard.get_text() {
+                                            if let Some(img_bytes) = check_clipboard_image_path(&clip_text) {
+                                                let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs();
+                                                let fname = format!("img_{}.png", ts);
+                                                if let Ok(rel_path) = nb_mgr.save_asset(&fname, &img_bytes) {
+                                                    undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
+                                                    if !selection.is_collapsed() {
+                                                        let (s, e) = selection.byte_range();
+                                                        buffer.delete(s, e - s);
+                                                        cursor_pos = s;
+                                                    }
+                                                    let tag = format!("![image]({})\n", rel_path);
+                                                    buffer.insert(cursor_pos, tag.as_bytes());
+                                                    cursor_pos += tag.len();
+                                                    selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                                    is_dirty = true;
+                                                    last_edit_time = Instant::now();
+                                                    status_msg = format!("Imported image into {}", rel_path);
+                                                    image_saved = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if !image_saved {
+                                        SelectionHandler::paste_clipboard(&mut selection, &mut buffer, &mut undo_mgr, &clipboard);
+                                        cursor_pos = selection.head.byte_offset;
+                                        is_dirty = true;
+                                        last_edit_time = Instant::now();
+                                        status_msg = "Pasted text from clipboard".into();
+                                    }
                                 }
                             }
                             KeyAction::SelectAll => {
@@ -1241,7 +1768,11 @@ fn main() {
                                 editor_scroll_y += 200;
                             }
                             KeyAction::Backspace => {
-                                if focus == ActiveFocus::Editor {
+                                if focus == ActiveFocus::PageList && middle_mode == MiddlePaneMode::Search {
+                                    search_query.pop();
+                                    search_hits = nb_mgr.search_notes(&search_query);
+                                    status_msg = format!("Found {} matches for '{}'", search_hits.len(), search_query);
+                                } else if focus == ActiveFocus::Editor {
                                     undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
                                     if !selection.is_collapsed() {
                                         let (s, e) = selection.byte_range();
@@ -1278,29 +1809,53 @@ fn main() {
                                 }
                             }
                             KeyAction::Return => {
-                                match focus {
-                                    ActiveFocus::Sidebar | ActiveFocus::PageList => {
-                                        focus = ActiveFocus::Editor;
-                                        status_msg = "Focused Editor".into();
-                                    }
-                                    ActiveFocus::Editor => {
-                                        undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
-                                        if !selection.is_collapsed() {
-                                            let (s, e) = selection.byte_range();
-                                            buffer.delete(s, e - s);
-                                            cursor_pos = s;
+                                if focus == ActiveFocus::PageList && middle_mode == MiddlePaneMode::Search && !search_hits.is_empty() {
+                                    let hit = &search_hits[0];
+                                    if hit.page_idx != nb_mgr.active_page_idx {
+                                        if is_dirty {
+                                            let mut doc_bytes = vec![0u8; buffer.len()];
+                                            buffer.copy_range(0, buffer.len(), &mut doc_bytes);
+                                            let _ = nb_mgr.save_active_content(&doc_bytes);
                                         }
-                                        buffer.insert(cursor_pos, b"\n");
-                                        cursor_pos += 1;
-                                        selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
-                                        is_dirty = true;
-                                        last_edit_time = Instant::now();
-                                        status_msg = "Edited".into();
+                                        nb_mgr.active_page_idx = hit.page_idx;
+                                        doc_memory = nb_mgr.load_active_content();
+                                        buffer = PieceTable::new(&doc_memory);
+                                        undo_mgr.clear();
+                                        is_dirty = false;
+                                    }
+                                    cursor_pos = hit.byte_offset.min(buffer.len());
+                                    selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                    focus = ActiveFocus::Editor;
+                                    status_msg = format!("Jumped to hit in {}", hit.page_name);
+                                } else {
+                                    match focus {
+                                        ActiveFocus::Sidebar | ActiveFocus::PageList => {
+                                            focus = ActiveFocus::Editor;
+                                            status_msg = "Focused Editor".into();
+                                        }
+                                        ActiveFocus::Editor => {
+                                            undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
+                                            if !selection.is_collapsed() {
+                                                let (s, e) = selection.byte_range();
+                                                buffer.delete(s, e - s);
+                                                cursor_pos = s;
+                                            }
+                                            buffer.insert(cursor_pos, b"\n");
+                                            cursor_pos += 1;
+                                            selection = Selection::collapsed(Cursor::new(cursor_pos, 0, 0));
+                                            is_dirty = true;
+                                            last_edit_time = Instant::now();
+                                            status_msg = "Edited".into();
+                                        }
                                     }
                                 }
                             }
                             KeyAction::Char(c) => {
-                                if focus == ActiveFocus::Editor {
+                                if focus == ActiveFocus::PageList && middle_mode == MiddlePaneMode::Search {
+                                    search_query.push(c);
+                                    search_hits = nb_mgr.search_notes(&search_query);
+                                    status_msg = format!("Found {} matches for '{}'", search_hits.len(), search_query);
+                                } else if focus == ActiveFocus::Editor {
                                     undo_mgr.push_undo(buffer.take_snapshot(cursor_pos));
                                     if !selection.is_collapsed() {
                                         let (s, e) = selection.byte_range();
@@ -1342,23 +1897,28 @@ fn main() {
                             editor_scroll_y = (caret_y + 18 - visible_h).max(0);
                         }
 
-                        current_click_targets = redraw(
-                            &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
-                            &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
-                            editor_scroll_y, scroll_y, is_dirty, view_mode, &status_msg,
-                        );
-                        let _ = win.present_framebuffer(&fb, width, height);
+                        needs_redraw = true;
                     }
                     _ => {}
                 }
             }
             Ok(None) => {
-                // Timeout elapsed with no incoming event; loop iterates to handle autosave and stdin
+                // Timeout elapsed with no incoming event
             }
             Err(e) => {
                 eprintln!("Display connection notice: {}", e);
                 break;
             }
+        }
+
+        if needs_redraw {
+            current_click_targets = redraw(
+                &mut fb, width, height, sidebar_w, page_list_w, dragging_splitter,
+                &buffer, &mut parser, &nb_mgr, focus, cursor_pos, &selection,
+                editor_scroll_y, scroll_y, sidebar_scroll_y, page_list_scroll_y,
+                middle_mode, &search_query, &search_hits, is_dirty, view_mode, &status_msg,
+            );
+            let _ = win.present_framebuffer(&fb, width, height);
         }
     }
 }

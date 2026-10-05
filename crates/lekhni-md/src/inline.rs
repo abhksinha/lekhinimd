@@ -115,6 +115,20 @@ impl InlineParser {
                 continue;
             }
 
+            // Wikilinks [[target]] or [[target|label]]
+            if b == b'[' && i + 1 < len && text[i + 1] == b'[' {
+                let mut j = i + 2;
+                while j + 1 < len && !(text[j] == b']' && text[j + 1] == b']') && text[j] != b'\n' {
+                    j += 1;
+                }
+                if j + 1 < len && text[j] == b']' && text[j + 1] == b']' {
+                    out_spans.push(PackedSpan::new(i as u32, style::LINK, 1));
+                    out_spans.push(PackedSpan::new((j + 2) as u32, style::PLAIN, 0));
+                    i = j + 2;
+                    continue;
+                }
+            }
+
             // Links [label](url)
             if b == b'[' {
                 let mut j = i + 1;
