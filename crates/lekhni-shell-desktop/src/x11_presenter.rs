@@ -164,6 +164,14 @@ impl X11Window {
         Ok(())
     }
 
+    /// Reads the next X11 event packet (blocking with zero CPU idle usage).
+    pub fn wait_event(&mut self) -> Result<[u8; 32], std::io::Error> {
+        self.stream.set_nonblocking(false)?;
+        let mut event_buf = [0u8; 32];
+        self.stream.read_exact(&mut event_buf)?;
+        Ok(event_buf)
+    }
+
     /// Polls for incoming X11 event packets (non-blocking).
     pub fn poll_event(&mut self) -> Option<u8> {
         self.stream.set_nonblocking(true).ok()?;
