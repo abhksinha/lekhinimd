@@ -22,6 +22,18 @@ impl PreviewRenderer {
         viewport_w: i32,
         viewport_h: i32,
     ) {
+        Self::render_preview_with_content(canvas, blocks, &[], scroll_y, viewport_w, viewport_h);
+    }
+
+    /// Renders visible Markdown blocks along with their text content into the canvas framebuffer.
+    pub fn render_preview_with_content(
+        canvas: &mut Canvas,
+        blocks: &BlockTable,
+        doc_bytes: &[u8],
+        scroll_y: i32,
+        viewport_w: i32,
+        viewport_h: i32,
+    ) {
         let origin_x = canvas.clip.x;
         let origin_y = canvas.clip.y;
         let mut curr_y = origin_y + 10 - scroll_y; // 10px top margin
@@ -43,24 +55,45 @@ impl PreviewRenderer {
 
             // Viewport culling: only draw if block intersects visible viewport
             if block_rect.intersect(&viewport_rect).is_some() {
+                let start = (blocks.start[i] as usize).min(doc_bytes.len());
+                let end = (blocks.end[i] as usize).min(doc_bytes.len());
+                let text_slice = if start < end { &doc_bytes[start..end] } else { b"" };
+                let text_str = core::str::from_utf8(text_slice).unwrap_or("");
+                let clean_text = text_str.lines().next().unwrap_or("").trim();
+
                 match kind {
                     BlockKind::Heading1 => {
-                        // Title bar accent
                         canvas.fill_rect(Rect::new(origin_x + 20, curr_y + 32, viewport_w - 40, 2), 0xFF_4A_90_E2);
+                        let heading_label = clean_text.trim_start_matches('#').trim();
+                        canvas.draw_text(heading_label, origin_x + 20, curr_y + 10, 0xFF_FF_FF_FF);
+                    }
+                    BlockKind::Heading2 => {
+                        let heading_label = clean_text.trim_start_matches('#').trim();
+                        canvas.draw_text(heading_label, origin_x + 20, curr_y + 6, 0xFF_E0_E0_E0);
+                    }
+                    BlockKind::Heading3 => {
+                        let heading_label = clean_text.trim_start_matches('#').trim();
+                        canvas.draw_text(heading_label, origin_x + 20, curr_y + 4, 0xFF_C5_C5_C5);
                     }
                     BlockKind::FencedCode => {
-                        // Shaded code block background
                         canvas.fill_rect(block_rect, 0xFF_25_25_26);
+                        let code_content = clean_text.trim_start_matches('`').trim();
+                        canvas.draw_text(code_content, origin_x + 28, curr_y + 16, 0xFF_CE_91_78);
                     }
                     BlockKind::BlockQuote => {
-                        // Left vertical accent bar
                         canvas.fill_rect(Rect::new(origin_x + 20, curr_y, 4, block_h), 0xFF_00_7A_CC);
+                        let quote_text = clean_text.trim_start_matches('>').trim();
+                        canvas.draw_text(quote_text, origin_x + 32, curr_y + 6, 0xFF_9C_DC_FE);
                     }
                     BlockKind::ThematicBreak => {
-                        // Horizontal divider
                         canvas.fill_rect(Rect::new(origin_x + 20, curr_y + 5, viewport_w - 40, 1), 0xFF_55_55_55);
                     }
-                    _ => {}
+                    BlockKind::ListItem => {
+                        canvas.draw_text(clean_text, origin_x + 24, curr_y + 3, 0xFF_B5_CE_A8);
+                    }
+                    _ => {
+                        canvas.draw_text(clean_text, origin_x + 20, curr_y + 3, 0xFF_D4_D4_D4);
+                    }
                 }
             }
 

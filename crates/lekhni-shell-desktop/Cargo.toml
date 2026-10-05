@@ -14,3 +14,4 @@ lekhni-raster = { path = "../lekhni-raster" }
 lekhni-shell = { path = "../lekhni-shell" }
 lekhni-ui = { path = "../lekhni-ui" }
 lekhni-layout = { path = "../lekhni-layout" }
+lekhni-store = { path = "../lekhni-store" }

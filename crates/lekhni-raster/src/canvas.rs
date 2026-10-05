@@ -4,6 +4,7 @@ use crate::atlas::{AtlasGlyph, GlyphAtlas};
 use crate::blend::blend_glyph_mask;
 use crate::blend::blend_pixel_premul;
 use crate::damage::Rect;
+use crate::font::{FONT_8X16, FONT_WIDTH};
 
 /// Canvas drawing directly into a target CPU framebuffer (`&mut [u32]`).
 pub struct Canvas<'a> {
@@ -82,4 +83,42 @@ impl<'a> Canvas<'a> {
             }
         }
     }
+
+    /// Draws a single ASCII character (32..=126) using the embedded 8x16 bitmap font.
+    pub fn draw_char(&mut self, c: char, x: i32, y: i32, color: u32) {
+        let code = c as u32;
+        if !(32..=127).contains(&code) {
+            return;
+        }
+        let glyph_idx = (code - 32) as usize;
+        let glyph_rows = &FONT_8X16[glyph_idx];
+
+        for (row, &byte) in glyph_rows.iter().enumerate() {
+            let py = y + row as i32;
+            if py < self.clip.y || py >= self.clip.bottom() {
+                continue;
+            }
+            for col in 0..8i32 {
+                if (byte & (0x80 >> col)) != 0 {
+                    let px = x + col;
+                    if px >= self.clip.x && px < self.clip.right() {
+                        let idx = (py as usize) * (self.width as usize) + (px as usize);
+                        self.buffer[idx] = blend_pixel_premul(color, self.buffer[idx]);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Draws a single line of ASCII text using the embedded 8x16 bitmap font.
+    pub fn draw_text(&mut self, text: &str, mut x: i32, y: i32, color: u32) {
+        for c in text.chars() {
+            if c == '\n' {
+                break;
+            }
+            self.draw_char(c, x, y, color);
+            x += FONT_WIDTH;
+        }
+    }
 }
+

@@ -7,3 +7,4 @@ pub mod atlas;
 pub mod blend;
 pub mod canvas;
 pub mod damage;
+pub mod font;

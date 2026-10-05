@@ -5,6 +5,7 @@
 
 pub mod a11y_bridge;
 pub mod gpu_presenter;
+pub mod workspace;
 #[cfg(target_os = "linux")]
 pub mod x11_presenter;
 use lekhni_md::parser::MarkdownParser;
