@@ -22,8 +22,10 @@ impl PreviewRenderer {
         viewport_w: i32,
         viewport_h: i32,
     ) {
-        let mut curr_y = 10 - scroll_y; // 10px top margin
-        let viewport_rect = Rect::new(0, 0, viewport_w, viewport_h);
+        let origin_x = canvas.clip.x;
+        let origin_y = canvas.clip.y;
+        let mut curr_y = origin_y + 10 - scroll_y; // 10px top margin
+        let viewport_rect = Rect::new(origin_x, origin_y, viewport_w, viewport_h);
 
         for i in 0..blocks.len() {
             let kind = BlockKind::from_u8(blocks.kind[i]);
@@ -37,14 +39,14 @@ impl PreviewRenderer {
                 _ => 22,
             };
 
-            let block_rect = Rect::new(20, curr_y, viewport_w - 40, block_h);
+            let block_rect = Rect::new(origin_x + 20, curr_y, viewport_w - 40, block_h);
 
             // Viewport culling: only draw if block intersects visible viewport
             if block_rect.intersect(&viewport_rect).is_some() {
                 match kind {
                     BlockKind::Heading1 => {
                         // Title bar accent
-                        canvas.fill_rect(Rect::new(20, curr_y + 32, viewport_w - 40, 2), 0xFF_4A_90_E2);
+                        canvas.fill_rect(Rect::new(origin_x + 20, curr_y + 32, viewport_w - 40, 2), 0xFF_4A_90_E2);
                     }
                     BlockKind::FencedCode => {
                         // Shaded code block background
@@ -52,11 +54,11 @@ impl PreviewRenderer {
                     }
                     BlockKind::BlockQuote => {
                         // Left vertical accent bar
-                        canvas.fill_rect(Rect::new(20, curr_y, 4, block_h), 0xFF_00_7A_CC);
+                        canvas.fill_rect(Rect::new(origin_x + 20, curr_y, 4, block_h), 0xFF_00_7A_CC);
                     }
                     BlockKind::ThematicBreak => {
                         // Horizontal divider
-                        canvas.fill_rect(Rect::new(20, curr_y + 5, viewport_w - 40, 1), 0xFF_55_55_55);
+                        canvas.fill_rect(Rect::new(origin_x + 20, curr_y + 5, viewport_w - 40, 1), 0xFF_55_55_55);
                     }
                     _ => {}
                 }

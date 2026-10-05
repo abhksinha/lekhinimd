@@ -58,8 +58,13 @@ impl X11Window {
 
         // Parse resource ID base and mask
         let res_id_base = u32::from_le_bytes(reply_body[4..8].try_into().unwrap());
-        let root_window = u32::from_le_bytes(reply_body[32..36].try_into().unwrap());
-        let root_visual = u32::from_le_bytes(reply_body[24..28].try_into().unwrap());
+        let vendor_len = u16::from_le_bytes([reply_body[16], reply_body[17]]) as usize;
+        let num_formats = reply_body[21] as usize;
+        let vendor_pad = (4 - (vendor_len % 4)) % 4;
+
+        let screen_offset = 32 + vendor_len + vendor_pad + (num_formats * 8);
+        let root_window = u32::from_le_bytes(reply_body[screen_offset..screen_offset + 4].try_into().unwrap());
+        let root_visual = u32::from_le_bytes(reply_body[screen_offset + 32..screen_offset + 36].try_into().unwrap());
 
         let window_id = res_id_base | 1;
         let gc_id = res_id_base | 2;
@@ -123,8 +128,27 @@ impl X11Window {
         map_req.push(0);
         map_req.extend_from_slice(&2u16.to_le_bytes()); // 2 * 4 bytes
         map_req.extend_from_slice(&window_id.to_le_bytes());
-
         stream.write_all(&map_req).map_err(|e| e.to_string())?;
+
+        // 6. RaiseWindow: ConfigureWindow (Opcode 12) with stack_mode = Above (0)
+        let mut raise_req = Vec::new();
+        raise_req.push(12u8); // ConfigureWindow
+        raise_req.push(0);
+        raise_req.extend_from_slice(&4u16.to_le_bytes()); // 4 * 4 = 16 bytes
+        raise_req.extend_from_slice(&window_id.to_le_bytes());
+        raise_req.extend_from_slice(&0x0040u16.to_le_bytes()); // value-mask: CWStackMode (0x0040)
+        raise_req.extend_from_slice(&[0, 0]); // pad
+        raise_req.extend_from_slice(&0u32.to_le_bytes()); // Above = 0
+        stream.write_all(&raise_req).map_err(|e| e.to_string())?;
+
+        // 7. SetInputFocus (Opcode 42)
+        let mut focus_req = Vec::new();
+        focus_req.push(42u8); // SetInputFocus
+        focus_req.push(2u8); // RevertToParent
+        focus_req.extend_from_slice(&3u16.to_le_bytes()); // 3 * 4 = 12 bytes
+        focus_req.extend_from_slice(&window_id.to_le_bytes());
+        focus_req.extend_from_slice(&0u32.to_le_bytes()); // CurrentTime = 0
+        stream.write_all(&focus_req).map_err(|e| e.to_string())?;
         stream.flush().map_err(|e| e.to_string())?;
 
         Ok(Self {
@@ -138,28 +162,39 @@ impl X11Window {
 
     /// Blits 32-bit ARGB/XRGB pixels into the X11 window.
     pub fn present_framebuffer(&mut self, pixels: &[u32], width: u16, height: u16) -> Result<(), String> {
-        let pixel_bytes: &[u8] = unsafe {
-            std::slice::from_raw_parts(pixels.as_ptr() as *const u8, pixels.len() * 4)
-        };
+        let chunk_h = 32u16;
+        let mut y = 0u16;
 
-        // PutImage (Opcode 72): max request length chunking
-        let mut req = Vec::with_capacity(24 + pixel_bytes.len());
-        let total_words = 6 + (pixel_bytes.len() / 4);
-        req.push(72u8); // PutImage
-        req.push(2u8); // ZPixmap format
-        req.extend_from_slice(&(total_words as u16).to_le_bytes());
-        req.extend_from_slice(&self.window_id.to_le_bytes());
-        req.extend_from_slice(&self.gc_id.to_le_bytes());
-        req.extend_from_slice(&width.to_le_bytes());
-        req.extend_from_slice(&height.to_le_bytes());
-        req.extend_from_slice(&0i16.to_le_bytes()); // dst X
-        req.extend_from_slice(&0i16.to_le_bytes()); // dst Y
-        req.push(0); // Left pad
-        req.push(24); // Depth 24-bit
-        req.extend_from_slice(&[0, 0]); // Unused
-        req.extend_from_slice(pixel_bytes);
+        while y < height {
+            let current_h = chunk_h.min(height - y);
+            let start_pixel = (y as usize) * (width as usize);
+            let pixel_count = (current_h as usize) * (width as usize);
+            let slice = &pixels[start_pixel..start_pixel + pixel_count];
 
-        self.stream.write_all(&req).map_err(|e| e.to_string())?;
+            let pixel_bytes: &[u8] = unsafe {
+                std::slice::from_raw_parts(slice.as_ptr() as *const u8, pixel_count * 4)
+            };
+
+            let total_words = 6 + (pixel_bytes.len() / 4);
+            let mut req = Vec::with_capacity(24 + pixel_bytes.len());
+            req.push(72u8); // PutImage
+            req.push(2u8); // ZPixmap format
+            req.extend_from_slice(&(total_words as u16).to_le_bytes());
+            req.extend_from_slice(&self.window_id.to_le_bytes());
+            req.extend_from_slice(&self.gc_id.to_le_bytes());
+            req.extend_from_slice(&width.to_le_bytes());
+            req.extend_from_slice(&current_h.to_le_bytes());
+            req.extend_from_slice(&0i16.to_le_bytes()); // dst X
+            req.extend_from_slice(&(y as i16).to_le_bytes()); // dst Y
+            req.push(0); // Left pad
+            req.push(24); // Depth 24-bit
+            req.extend_from_slice(&[0, 0]); // Unused
+            req.extend_from_slice(pixel_bytes);
+
+            self.stream.write_all(&req).map_err(|e| e.to_string())?;
+            y += current_h;
+        }
+
         self.stream.flush().map_err(|e| e.to_string())?;
         Ok(())
     }
