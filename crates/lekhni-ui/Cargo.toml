@@ -1,0 +1,24 @@
+[package]
+name = "lekhni-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = ["alloc"]
+alloc = [
+    "lekhni-base/alloc",
+    "lekhni-text/alloc",
+    "lekhni-md/alloc",
+    "lekhni-raster/alloc",
+    "lekhni-shell/alloc",
+]
+
+[dependencies]
+lekhni-base = { path = "../lekhni-base", default-features = false }
+lekhni-text = { path = "../lekhni-text", default-features = false }
+lekhni-md = { path = "../lekhni-md", default-features = false }
+lekhni-raster = { path = "../lekhni-raster", default-features = false }
+lekhni-shell = { path = "../lekhni-shell", default-features = false }

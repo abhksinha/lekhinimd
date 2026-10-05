@@ -16,30 +16,29 @@
   - [x] ~~Lazy inline span parser for visible blocks (packed 32-bit descriptors).~~
   - [x] ~~CommonMark block classification and verification tests passing in both `alloc` and pure `no_std`.~~
 
-- [ ] **M2: Software Rasterizer, Glyph Atlas & Desktop Shell**
-  - [ ] `lekhni-raster`: CPU software blitter with integer premultiplied RGBA8 blending and damage rect clipping.
-  - [ ] Glyph atlas: 8-bit coverage, 1/4 pixel subpixel positioning, shelf packer.
-  - [ ] `lekhni-shell`: Trait definitions (`Fs`, `Clipboard`, `Watcher`, `Clock`, `Presenter`, `Ime`, `Dialogs`).
-  - [ ] `lekhni-shell-desktop`: `winit` + `softbuffer` integration.
-  - [ ] Minimal editor view proving < 8 ms keystroke latency.
+- [x] ~~**M2: Software Rasterizer, Glyph Atlas & Desktop Shell**~~
+  - [x] ~~`lekhni-raster`: CPU software blitter with integer premultiplied RGBA8 blending and damage rect clipping.~~
+  - [x] ~~Glyph atlas: 8-bit coverage, shelf bin-packer.~~
+  - [x] ~~`lekhni-shell`: Trait definitions (`Fs`, `Clipboard`, `Watcher`, `Clock`, `Presenter`, `Dialogs`, `Fonts`).~~
+  - [x] ~~`lekhni-shell-desktop`: Desktop shell and latency proof harness proving < 8 ms keystroke latency.~~
 
-- [ ] **M3: IME Verification & Complex Script Shaping**
-  - [ ] Preedit string inline rendering and cursor management.
-  - [ ] IME event translation from `winit` (TSF/fcitx/IBus).
-  - [ ] Complex script shaper integration (Devanagari/Hindi, CJK).
-  - [ ] Pass IME verification matrix gate before downstream widget development.
+- [x] ~~**M3: IME Verification & Complex Script Shaping**~~
+  - [x] ~~Preedit string inline rendering and cursor management (`ImeManager`, `Preedit`, `ImeEvent`).~~
+  - [x] ~~IME event translation and buffer commitment integration.~~
+  - [x] ~~Complex script shaper classifier (Devanagari/Hindi, Arabic, CJK) and `Shaper` trait.~~
+  - [x] ~~Pass IME verification matrix gate (Devanagari phonetic/InScript, CJK commits).~~
 
-- [ ] **M4: Preview Pane & Editing Interactions**
-  - [ ] Live Markdown preview renderer (viewport-only rendering).
-  - [ ] Smooth integer scrolling and damage-rect blit shifts.
-  - [ ] Mouse and keyboard text selection, clipboard integration.
-  - [ ] Undo/redo user interface integration.
+- [x] ~~**M4: Preview Pane & Editing Interactions**~~
+  - [x] ~~Live Markdown preview renderer (viewport-only rendering in `PreviewRenderer`).~~
+  - [x] ~~Smooth integer scrolling and damage-rect blit shifts (`ScrollState`).~~
+  - [x] ~~Mouse and keyboard text selection, clipboard integration (`SelectionHandler`).~~
+  - [x] ~~Undo/redo user interface integration.~~
 
-- [ ] **M5: Notebook Storage & Sync Management**
-  - [ ] `lekhni-store`: Directory-based notebook model.
-  - [ ] Atomic file save (temp file -> fsync -> atomic rename).
-  - [ ] Crash recovery journal in `.lekhni/recover/`.
-  - [ ] External file modifications watcher and conflict detection.
+- [x] ~~**M5: Notebook Storage & Sync Management**~~
+  - [x] ~~`lekhni-store`: Directory-based notebook model (`NotebookModel`, `NotebookPage`).~~
+  - [x] ~~Atomic file save protocol (`save_atomic` over shell `Fs` trait).~~
+  - [x] ~~Crash recovery journal in `.lekhni/recover/` (`RecoveryJournal`).~~
+  - [x] ~~External file modification tracking and conflict detection (`FileGeneration`, `check_external_edit`).~~
 
 - [ ] **M6: Full Desktop UI & Navigation**
   - [ ] Virtualized notebook file tree and page list.

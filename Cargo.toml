@@ -4,6 +4,11 @@ members = [
     "crates/lekhni-base",
     "crates/lekhni-text",
     "crates/lekhni-md",
+    "crates/lekhni-raster",
+    "crates/lekhni-shell",
+    "crates/lekhni-shell-desktop",
+    "crates/lekhni-ui",
+    "crates/lekhni-store",
 ]
 
 [workspace.package]
