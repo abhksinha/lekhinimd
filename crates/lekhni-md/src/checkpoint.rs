@@ -127,6 +127,16 @@ impl CheckpointTable {
         best
     }
 
+    /// Finds the first checkpoint strictly after `line`.
+    pub fn find_next_checkpoint_after_line(&self, line: usize) -> Option<(usize, Checkpoint)> {
+        for (idx, cp) in self.checkpoints.iter().enumerate() {
+            if cp.line > line {
+                return Some((idx, *cp));
+            }
+        }
+        None
+    }
+
     /// Truncates checkpoints starting from the given line.
     pub fn truncate_from_line(&mut self, line: usize) {
         self.checkpoints.retain(|cp| cp.line < line);

@@ -43,18 +43,30 @@ pub fn blend_glyph_mask(text_color: u32, coverage: u8, dst: u32) -> u32 {
         return dst;
     }
     let cov = coverage as u32;
-
     let text_a = (text_color >> 24) & 0xFF;
+    let eff_a = (text_a * cov + 127) / 255;
+    if eff_a == 0 {
+        return dst;
+    }
+
+    let inv_a = 255 - eff_a;
+    let dst_a = (dst >> 24) & 0xFF;
+    let dst_r = (dst >> 16) & 0xFF;
+    let dst_g = (dst >> 8) & 0xFF;
+    let dst_b = dst & 0xFF;
+
     let text_r = (text_color >> 16) & 0xFF;
     let text_g = (text_color >> 8) & 0xFF;
     let text_b = text_color & 0xFF;
 
-    // Scale text color components by glyph coverage
-    let eff_a = (text_a * cov + 127) / 255;
     let eff_r = (text_r * cov + 127) / 255;
     let eff_g = (text_g * cov + 127) / 255;
     let eff_b = (text_b * cov + 127) / 255;
 
-    let src = (eff_a << 24) | (eff_r << 16) | (eff_g << 8) | eff_b;
-    blend_pixel_premul(src, dst)
+    let out_a = eff_a + ((dst_a * inv_a + 127) / 255);
+    let out_r = eff_r + ((dst_r * inv_a + 127) / 255);
+    let out_g = eff_g + ((dst_g * inv_a + 127) / 255);
+    let out_b = eff_b + ((dst_b * inv_a + 127) / 255);
+
+    (out_a << 24) | (out_r << 16) | (out_g << 8) | out_b
 }

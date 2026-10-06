@@ -22,10 +22,14 @@ impl Fs for StdFs {
     }
 
     fn write_atomic(&self, path: &str, data: &[u8]) -> Result<(), Self::Error> {
+        use std::io::Write;
         if let Some(parent) = Path::new(path).parent() {
             fs::create_dir_all(parent)?;
         }
-        fs::write(path, data)
+        let mut file = fs::File::create(path)?;
+        file.write_all(data)?;
+        file.sync_all()?;
+        Ok(())
     }
 
     fn stat(&self, path: &str) -> Result<(u64, u64), Self::Error> {

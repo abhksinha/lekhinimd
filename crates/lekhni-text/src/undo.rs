@@ -4,13 +4,17 @@
 //! are append-only/immutable, an undo snapshot only clones the list of pieces.
 
 #[cfg(feature = "alloc")]
+use alloc::sync::Arc;
+#[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 use crate::buffer::Piece;
 
 /// A snapshot of buffer state for undo/redo.
+/// Uses reference-counted slice (`Arc<[Piece]>`) to make taking a snapshot O(1)
+/// pointer clone without heap reallocations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UndoSnapshot {
-    pub pieces: Vec<Piece>,
+    pub pieces: Arc<[Piece]>,
     pub cursor_offset: usize,
     pub total_len: usize,
     pub total_lines: usize,

@@ -120,6 +120,24 @@ impl BlockTable {
         self.flags.truncate(len);
     }
 
+    /// Extends this BlockTable with slices from another BlockTable, shifting start and end by delta.
+    pub fn extend_from_shifted(&mut self, other: &BlockTable, from: usize, to: usize, delta: i64) {
+        if from >= to || from >= other.len() {
+            return;
+        }
+        let end_idx = to.min(other.len());
+        self.kind.extend_from_slice(&other.kind[from..end_idx]);
+        self.depth.extend_from_slice(&other.depth[from..end_idx]);
+        self.flags.extend_from_slice(&other.flags[from..end_idx]);
+
+        for i in from..end_idx {
+            let new_start = (other.start[i] as i64 + delta).max(0) as u32;
+            let new_end = (other.end[i] as i64 + delta).max(0) as u32;
+            self.start.push(new_start);
+            self.end.push(new_end);
+        }
+    }
+
     /// Finds the block index containing the given byte offset using binary search on `end`.
     pub fn find_block_at(&self, offset: u32) -> Option<usize> {
         let count = self.len();

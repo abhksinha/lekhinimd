@@ -89,7 +89,7 @@ impl<'a> PieceTable<'a> {
     /// Takes a snapshot of the current piece descriptors for undo.
     pub fn take_snapshot(&self, cursor_offset: usize) -> crate::undo::UndoSnapshot {
         crate::undo::UndoSnapshot {
-            pieces: self.pieces.clone(),
+            pieces: alloc::sync::Arc::from(self.pieces.as_slice()),
             cursor_offset,
             total_len: self.total_len,
             total_lines: self.total_lines,
@@ -98,7 +98,7 @@ impl<'a> PieceTable<'a> {
 
     /// Restores a snapshot of piece descriptors from an undo state.
     pub fn restore_snapshot(&mut self, snapshot: crate::undo::UndoSnapshot) {
-        self.pieces = snapshot.pieces;
+        self.pieces = snapshot.pieces.to_vec();
         self.total_len = snapshot.total_len;
         self.total_lines = snapshot.total_lines;
     }
@@ -196,8 +196,20 @@ impl<'a> PieceTable<'a> {
                 let split_point = offset - curr_offset;
 
                 if split_point == 0 {
+                    // Check if can coalesce with previous piece
+                    if i > 0 && self.pieces[i - 1].source == BufferSource::Add && self.pieces[i - 1].start + self.pieces[i - 1].length == add_start {
+                        self.pieces[i - 1].length += text.len() as u32;
+                        self.pieces[i - 1].line_breaks += text_lines;
+                        return;
+                    }
                     self.pieces.insert(i, new_piece);
                 } else if split_point == piece_len {
+                    // Check if can coalesce with current piece
+                    if self.pieces[i].source == BufferSource::Add && self.pieces[i].start + self.pieces[i].length == add_start {
+                        self.pieces[i].length += text.len() as u32;
+                        self.pieces[i].line_breaks += text_lines;
+                        return;
+                    }
                     self.pieces.insert(i + 1, new_piece);
                 } else {
                     let old_piece = self.pieces[i];

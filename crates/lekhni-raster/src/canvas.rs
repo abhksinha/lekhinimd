@@ -79,7 +79,15 @@ impl<'a> Canvas<'a> {
 
             for col in 0..w {
                 let cov = atlas.pixels[atlas_row + col];
-                self.buffer[fb_row + col] = blend_glyph_mask(color, cov, self.buffer[fb_row + col]);
+                if cov == 0 {
+                    continue;
+                }
+                let dst = self.buffer[fb_row + col];
+                self.buffer[fb_row + col] = if cov == 255 && (color >> 24) == 255 {
+                    color
+                } else {
+                    blend_glyph_mask(color, cov, dst)
+                };
             }
         }
     }
