@@ -46,16 +46,19 @@ impl TrigramIndex {
                 window[2].to_ascii_lowercase(),
             );
 
-            if let Some(pos) = self.postings.iter().position(|p| p.trigram == key) {
-                let doc_ids = &mut self.postings[pos].doc_ids;
-                if doc_ids.last().copied() != Some(doc_id) {
-                    doc_ids.push(doc_id);
+            match self.postings.binary_search_by_key(&key, |p| p.trigram) {
+                Ok(pos) => {
+                    let doc_ids = &mut self.postings[pos].doc_ids;
+                    if doc_ids.last().copied() != Some(doc_id) {
+                        doc_ids.push(doc_id);
+                    }
                 }
-            } else {
-                self.postings.push(TrigramPosting {
-                    trigram: key,
-                    doc_ids: alloc::vec![doc_id],
-                });
+                Err(pos) => {
+                    self.postings.insert(pos, TrigramPosting {
+                        trigram: key,
+                        doc_ids: alloc::vec![doc_id],
+                    });
+                }
             }
         }
     }
@@ -75,7 +78,7 @@ impl TrigramIndex {
                 window[2].to_ascii_lowercase(),
             );
 
-            if let Some(pos) = self.postings.iter().position(|p| p.trigram == key) {
+            if let Ok(pos) = self.postings.binary_search_by_key(&key, |p| p.trigram) {
                 candidate_sets.push(&self.postings[pos].doc_ids);
             } else {
                 // Trigram not present in any document -> zero candidates
@@ -87,10 +90,10 @@ impl TrigramIndex {
             return Vec::new();
         }
 
-        // Intersect candidate document ID slices
+        // Intersect candidate document ID slices using binary search on sorted doc_ids
         let mut result: Vec<u32> = candidate_sets[0].to_vec();
         for set in &candidate_sets[1..] {
-            result.retain(|id| set.contains(id));
+            result.retain(|id| set.binary_search(id).is_ok());
         }
 
         result
