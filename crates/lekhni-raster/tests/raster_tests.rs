@@ -43,3 +43,25 @@ fn test_glyph_atlas_packing() {
     assert_eq!(g2.x, 16);
     assert_eq!(g2.y, 0);
 }
+
+#[test]
+fn test_vector_font_collection() {
+    use lekhni_raster::vector_font::FontCollection;
+
+    let fonts = FontCollection::load_default().expect("load default vector fonts");
+    assert!(fonts.ui.line_height > 10);
+    assert!(fonts.editor.line_height > 10);
+    assert!(fonts.h1.line_height > fonts.ui.line_height);
+
+    let (w, h) = fonts.ui.measure_text("Hello Lekhni");
+    assert!(w > 40);
+    assert!(h > 10);
+
+    let mut fb = [0u32; 200 * 50];
+    let mut canvas = Canvas::new(&mut fb, 200, 50);
+    let adv = fonts.ui.draw_text(&mut canvas, "Hello", 10, 10, 0xFF_FF_FF_FF);
+    assert!(adv > 20);
+    // Verify some pixels were shaded
+    let has_drawn_pixel = canvas.buffer.iter().any(|&px| px != 0);
+    assert!(has_drawn_pixel);
+}

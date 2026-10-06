@@ -24,6 +24,7 @@ use lekhni_ui::theme::Theme;
 use lekhni_store::recovery::RecoveryJournal;
 use lekhni_store::notebook::PageSortOrder;
 use lekhni_shell::Clipboard;
+use lekhni_raster::vector_font::{FontCollection, CachedFont};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum ActiveFocus {
@@ -264,62 +265,58 @@ fn find_line_end(buffer: &PieceTable, offset: usize) -> usize {
     curr
 }
 
-/// Renders a single line of Markdown source with syntax highlighting in the editor pane.
-fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x: i32, y: i32) {
+/// Renders a single line of Markdown source with syntax highlighting in the editor pane using the vector editor font.
+fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x: i32, y: i32, font: &CachedFont) {
+    let char_w = font.glyphs[b' ' as usize].advance_x.max(1) as i32;
     let trimmed = line.trim_start();
     if trimmed.starts_with("# ") {
         let prefix_len = line.len() - trimmed.len() + 2;
-        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E0_6C_75);
-        x += (prefix_len as i32) * 8;
-        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_61_AF_EF);
-        canvas.draw_text(&line[prefix_len..], x + 1, y, 0xFF_61_AF_EF); // bold
+        font.draw_text(canvas, &line[..prefix_len], x, y, 0xFF_E0_6C_75);
+        x += (prefix_len as i32) * char_w;
+        font.draw_text(canvas, &line[prefix_len..], x, y, 0xFF_61_AF_EF);
+        font.draw_text(canvas, &line[prefix_len..], x + 1, y, 0xFF_61_AF_EF); // bold
         return;
     } else if trimmed.starts_with("## ") {
         let prefix_len = line.len() - trimmed.len() + 3;
-        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E0_6C_75);
-        x += (prefix_len as i32) * 8;
-        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_61_AF_EF);
+        font.draw_text(canvas, &line[..prefix_len], x, y, 0xFF_E0_6C_75);
+        x += (prefix_len as i32) * char_w;
+        font.draw_text(canvas, &line[prefix_len..], x, y, 0xFF_61_AF_EF);
         return;
     } else if trimmed.starts_with("### ") {
         let prefix_len = line.len() - trimmed.len() + 4;
-        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E0_6C_75);
-        x += (prefix_len as i32) * 8;
-        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_4E_C9_B0);
+        font.draw_text(canvas, &line[..prefix_len], x, y, 0xFF_E0_6C_75);
+        x += (prefix_len as i32) * char_w;
+        font.draw_text(canvas, &line[prefix_len..], x, y, 0xFF_4E_C9_B0);
         return;
     } else if trimmed.starts_with("> ") {
         let prefix_len = line.len() - trimmed.len() + 2;
-        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_00_7A_CC);
-        x += (prefix_len as i32) * 8;
-        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_9C_DC_FE);
+        font.draw_text(canvas, &line[..prefix_len], x, y, 0xFF_00_7A_CC);
+        x += (prefix_len as i32) * char_w;
+        font.draw_text(canvas, &line[prefix_len..], x, y, 0xFF_9C_DC_FE);
         return;
     } else if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
-        canvas.draw_text(line, x, y, 0xFF_E5_C0_7B);
+        font.draw_text(canvas, line, x, y, 0xFF_E5_C0_7B);
         return;
     } else if trimmed.starts_with("- [ ] ") {
         let prefix_len = line.len() - trimmed.len() + 6;
-        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_E5_C0_7B);
-        x += (prefix_len as i32) * 8;
-        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_AB_B2_BF);
+        font.draw_text(canvas, &line[..prefix_len], x, y, 0xFF_E5_C0_7B);
+        x += (prefix_len as i32) * char_w;
+        font.draw_text(canvas, &line[prefix_len..], x, y, 0xFF_AB_B2_BF);
         return;
     } else if trimmed.starts_with("- [x] ") {
         let prefix_len = line.len() - trimmed.len() + 6;
-        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_98_C3_79);
-        x += (prefix_len as i32) * 8;
-        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_98_C3_79);
+        font.draw_text(canvas, &line[..prefix_len], x, y, 0xFF_98_C3_79);
+        x += (prefix_len as i32) * char_w;
+        font.draw_text(canvas, &line[prefix_len..], x, y, 0xFF_98_C3_79);
         return;
     } else if trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ ") {
         let prefix_len = line.len() - trimmed.len() + 2;
-        canvas.draw_text(&line[..prefix_len], x, y, 0xFF_61_AF_EF);
-        x += (prefix_len as i32) * 8;
-        canvas.draw_text(&line[prefix_len..], x, y, 0xFF_AB_B2_BF);
+        font.draw_text(canvas, &line[..prefix_len], x, y, 0xFF_61_AF_EF);
+        x += (prefix_len as i32) * char_w;
+        font.draw_text(canvas, &line[prefix_len..], x, y, 0xFF_AB_B2_BF);
         return;
     } else if trimmed.starts_with('|') && trimmed.ends_with('|') {
-        // Table row syntax highlighting
-        for ch in line.chars() {
-            let color = if ch == '|' { 0xFF_5C_63_70 } else { 0xFF_AB_B2_BF };
-            canvas.draw_char(ch, x, y, color);
-            x += 8;
-        }
+        font.draw_text(canvas, line, x, y, 0xFF_AB_B2_BF);
         return;
     }
 
@@ -330,9 +327,9 @@ fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x:
         if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
             if let Some(end) = line[i + 2..].find("**") {
                 let bold_full = &line[i..i + 4 + end];
-                canvas.draw_text(bold_full, x, y, 0xFF_FF_FF_FF);
-                canvas.draw_text(bold_full, x + 1, y, 0xFF_FF_FF_FF);
-                x += (bold_full.len() as i32) * 8;
+                font.draw_text(canvas, bold_full, x, y, 0xFF_FF_FF_FF);
+                font.draw_text(canvas, bold_full, x + 1, y, 0xFF_FF_FF_FF);
+                x += (bold_full.len() as i32) * char_w;
                 i += 4 + end;
                 continue;
             }
@@ -340,8 +337,8 @@ fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x:
         if i + 1 < bytes.len() && bytes[i] == b'~' && bytes[i + 1] == b'~' {
             if let Some(end) = line[i + 2..].find("~~") {
                 let strike_full = &line[i..i + 4 + end];
-                canvas.draw_text(strike_full, x, y, 0xFF_7F_84_8E);
-                x += (strike_full.len() as i32) * 8;
+                font.draw_text(canvas, strike_full, x, y, 0xFF_7F_84_8E);
+                x += (strike_full.len() as i32) * char_w;
                 i += 4 + end;
                 continue;
             }
@@ -349,8 +346,8 @@ fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x:
         if bytes[i] == b'`' {
             if let Some(end) = line[i + 1..].find('`') {
                 let code_full = &line[i..i + 2 + end];
-                canvas.draw_text(code_full, x, y, 0xFF_E0_6C_75);
-                x += (code_full.len() as i32) * 8;
+                font.draw_text(canvas, code_full, x, y, 0xFF_E0_6C_75);
+                x += (code_full.len() as i32) * char_w;
                 i += 2 + end;
                 continue;
             }
@@ -359,8 +356,8 @@ fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x:
             if let Some(close_bb) = line[i + 2..].find("]]") {
                 let total_len = 2 + close_bb + 2;
                 let wiki_full = &line[i..i + total_len];
-                canvas.draw_text(wiki_full, x, y, 0xFF_98_C3_79);
-                x += (wiki_full.len() as i32) * 8;
+                font.draw_text(canvas, wiki_full, x, y, 0xFF_98_C3_79);
+                x += (wiki_full.len() as i32) * char_w;
                 i += total_len;
                 continue;
             }
@@ -372,8 +369,8 @@ fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x:
                     if let Some(close_p) = rest.find(')') {
                         let total_len = 1 + close_b + 1 + 1 + close_p + 1;
                         let link_full = &line[i..i + total_len];
-                        canvas.draw_text(link_full, x, y, 0xFF_61_AF_EF);
-                        x += (link_full.len() as i32) * 8;
+                        font.draw_text(canvas, link_full, x, y, 0xFF_61_AF_EF);
+                        x += (link_full.len() as i32) * char_w;
                         i += total_len;
                         continue;
                     }
@@ -382,8 +379,9 @@ fn render_syntax_highlighted_editor_line(canvas: &mut Canvas, line: &str, mut x:
         }
 
         let ch = line[i..].chars().next().unwrap_or(' ');
-        canvas.draw_char(ch, x, y, 0xFF_AB_B2_BF);
-        x += 8;
+        let mut buf = [0u8; 4];
+        let s = ch.encode_utf8(&mut buf);
+        x += font.draw_text(canvas, s, x, y, 0xFF_AB_B2_BF);
         i += ch.len_utf8();
     }
 }
@@ -451,7 +449,12 @@ fn main() {
         }
     }
 
-    // 3. Open native X11 window
+    // 3. Load modern vector typography engine
+    let fonts = FontCollection::load_default().expect("load default vector fonts");
+    let char_w = fonts.editor.glyphs[b' ' as usize].advance_x as i32;
+    let line_h = fonts.editor.line_height;
+
+    // 4. Open native X11 window
     println!("Connecting to display and opening native window...");
     let mut win = match X11Window::open("Lekhni Markdown Editor (Native Pure Rust)", width, height) {
         Ok(w) => w,
@@ -464,7 +467,7 @@ fn main() {
 
     println!("Window mapped successfully! Window ID: 0x{:x}", win.window_id);
 
-    // 4. Redraw pass
+    // 5. Redraw pass
     #[allow(clippy::too_many_arguments)]
     let redraw = |fb: &mut [u32],
                   win_w: u16,
@@ -506,7 +509,7 @@ fn main() {
 
         // A. Top Menu Bar
         canvas.fill_rect(layout.menu_bar_rect, 0xFF_21_25_2B);
-        canvas.draw_text("LEKHNI", 12, 6, 0xFF_61_AF_EF);
+        fonts.ui_bold.draw_text(&mut canvas, "LEKHNI", 12, 6, 0xFF_61_AF_EF);
 
         // Interactive Pane Focus Pills in Header
         let pill_sidebar = Rect::new(80, 4, 100, 20);
@@ -514,13 +517,13 @@ fn main() {
         let pill_editor = Rect::new(277, 4, 90, 20);
 
         canvas.fill_rect(pill_sidebar, if focus == ActiveFocus::Sidebar { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[1] NOTES", 86, 6, if focus == ActiveFocus::Sidebar { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "[1] NOTES", 86, 6, if focus == ActiveFocus::Sidebar { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_pages, if focus == ActiveFocus::PageList { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[2] PAGES", 192, 6, if focus == ActiveFocus::PageList { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "[2] PAGES", 192, 6, if focus == ActiveFocus::PageList { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_editor, if focus == ActiveFocus::Editor { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[3] EDIT", 283, 6, if focus == ActiveFocus::Editor { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "[3] EDIT", 283, 6, if focus == ActiveFocus::Editor { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         // View Mode Selector Pills (F1: Split, F2: Editor, F3: Preview)
         let pill_m_split = Rect::new(380, 4, 75, 20);
@@ -528,20 +531,21 @@ fn main() {
         let pill_m_prev = Rect::new(540, 4, 80, 20);
 
         canvas.fill_rect(pill_m_split, if mode == WorkspaceMode::Split { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[F1] SPLIT", 384, 6, if mode == WorkspaceMode::Split { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "[F1] SPLIT", 384, 6, if mode == WorkspaceMode::Split { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_m_edit, if mode == WorkspaceMode::EditorOnly { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[F2] EDIT", 466, 6, if mode == WorkspaceMode::EditorOnly { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "[F2] EDIT", 466, 6, if mode == WorkspaceMode::EditorOnly { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_m_prev, if mode == WorkspaceMode::PreviewOnly { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("[F3] PREV", 546, 6, if mode == WorkspaceMode::PreviewOnly { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "[F3] PREV", 546, 6, if mode == WorkspaceMode::PreviewOnly { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         let active_nb_name = nb_mgr.notebooks.get(nb_mgr.active_notebook_idx).map(|s| s.as_str()).unwrap_or("None");
         let active_pg_name = nb_mgr.pages.get(nb_mgr.active_page_idx).map(|s| s.as_str()).unwrap_or("None");
         let right_label = format!("{}/{}", active_nb_name, active_pg_name);
-        let right_x = (win_w as i32) - (right_label.len() as i32 * 8) - 16;
+        let (label_w, _) = fonts.ui.measure_text(&right_label);
+        let right_x = (win_w as i32) - label_w - 16;
         if right_x > 630 {
-            canvas.draw_text(&right_label, right_x, 6, 0xFF_E5_C0_7B);
+            fonts.ui.draw_text(&mut canvas, &right_label, right_x, 6, 0xFF_E5_C0_7B);
         }
 
         // B. Sidebar (Notebooks)
@@ -551,9 +555,9 @@ fn main() {
         if focus == ActiveFocus::Sidebar {
             canvas.fill_rect(Rect::new(layout.sidebar_rect.x, layout.sidebar_rect.y, layout.sidebar_rect.width, 3), 0xFF_00_7A_CC);
             canvas.fill_rect(Rect::new(layout.sidebar_rect.x + 4, layout.sidebar_rect.y + 6, layout.sidebar_rect.width - 8, 20), 0xFF_2D_31_39);
-            canvas.draw_text("=== [ NOTEBOOKS ] ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_61_AF_EF);
+            fonts.ui_bold.draw_text(&mut canvas, "=== [ NOTEBOOKS ] ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_61_AF_EF);
         } else {
-            canvas.draw_text("=== NOTEBOOKS ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_5C_63_70);
+            fonts.ui.draw_text(&mut canvas, "=== NOTEBOOKS ===", layout.sidebar_rect.x + 12, layout.sidebar_rect.y + 8, 0xFF_5C_63_70);
         }
 
         let sb_clip = Rect::new(layout.sidebar_rect.x, layout.sidebar_rect.y + 30, layout.sidebar_rect.width, layout.sidebar_rect.height - 30);
@@ -574,9 +578,9 @@ fn main() {
                     if focus == ActiveFocus::Sidebar { 0xFF_09_47_71 } else { 0xFF_2C_31_3C },
                 );
                 canvas.fill_rect(Rect::new(layout.sidebar_rect.x + 4, nb_y - 2, 3, 22), 0xFF_00_7A_CC);
-                canvas.draw_text(&format!("* {}", nb), layout.sidebar_rect.x + 10, nb_y, 0xFF_FF_FF_FF);
+                fonts.ui_bold.draw_text(&mut canvas, &format!("* {}", nb), layout.sidebar_rect.x + 10, nb_y, 0xFF_FF_FF_FF);
             } else {
-                canvas.draw_text(&format!("  {}", nb), layout.sidebar_rect.x + 10, nb_y, 0xFF_AB_B2_BF);
+                fonts.ui.draw_text(&mut canvas, &format!("  {}", nb), layout.sidebar_rect.x + 10, nb_y, 0xFF_AB_B2_BF);
             }
         }
         canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
@@ -596,16 +600,16 @@ fn main() {
         let pill_b = Rect::new(layout.page_list_rect.x + 147, layout.page_list_rect.y + 4, 46, 18);
 
         canvas.fill_rect(pill_p, if middle_mode == MiddlePaneMode::Pages { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("PAGES", pill_p.x + 4, pill_p.y + 2, if middle_mode == MiddlePaneMode::Pages { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "PAGES", pill_p.x + 4, pill_p.y + 2, if middle_mode == MiddlePaneMode::Pages { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_o, if middle_mode == MiddlePaneMode::Outline { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("OUTL", pill_o.x + 6, pill_o.y + 2, if middle_mode == MiddlePaneMode::Outline { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "OUTL", pill_o.x + 6, pill_o.y + 2, if middle_mode == MiddlePaneMode::Outline { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_s, if middle_mode == MiddlePaneMode::Search { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("SRCH", pill_s.x + 6, pill_s.y + 2, if middle_mode == MiddlePaneMode::Search { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "SRCH", pill_s.x + 6, pill_s.y + 2, if middle_mode == MiddlePaneMode::Search { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         canvas.fill_rect(pill_b, if middle_mode == MiddlePaneMode::Backlinks { 0xFF_00_7A_CC } else { 0xFF_2D_31_39 });
-        canvas.draw_text("LNKS", pill_b.x + 6, pill_b.y + 2, if middle_mode == MiddlePaneMode::Backlinks { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
+        fonts.ui.draw_text(&mut canvas, "LNKS", pill_b.x + 6, pill_b.y + 2, if middle_mode == MiddlePaneMode::Backlinks { 0xFF_FF_FF_FF } else { 0xFF_AB_B2_BF });
 
         if focus == ActiveFocus::PageList {
             canvas.fill_rect(Rect::new(layout.page_list_rect.x, layout.page_list_rect.y, layout.page_list_rect.width, 3), 0xFF_00_7A_CC);
@@ -623,10 +627,10 @@ fn main() {
                     PageSortOrder::DateModifiedDesc => "NEW",
                     PageSortOrder::DateModifiedAsc => "OLD",
                 };
-                canvas.draw_text("+ NEW", layout.page_list_rect.x + 6, layout.page_list_rect.y + 28, 0xFF_98_C3_79);
-                canvas.draw_text("REN", layout.page_list_rect.x + 56, layout.page_list_rect.y + 28, 0xFF_E5_C0_7B);
-                canvas.draw_text("DEL", layout.page_list_rect.x + 90, layout.page_list_rect.y + 28, 0xFF_E0_6C_75);
-                canvas.draw_text(&format!("SORT:{}", sort_label), layout.page_list_rect.x + 124, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
+                fonts.ui.draw_text(&mut canvas, "+ NEW", layout.page_list_rect.x + 6, layout.page_list_rect.y + 28, 0xFF_98_C3_79);
+                fonts.ui.draw_text(&mut canvas, "REN", layout.page_list_rect.x + 56, layout.page_list_rect.y + 28, 0xFF_E5_C0_7B);
+                fonts.ui.draw_text(&mut canvas, "DEL", layout.page_list_rect.x + 90, layout.page_list_rect.y + 28, 0xFF_E0_6C_75);
+                fonts.ui.draw_text(&mut canvas, &format!("SORT:{}", sort_label), layout.page_list_rect.x + 124, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
 
                 let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 46, layout.page_list_rect.width, layout.page_list_rect.height - 46);
                 canvas.clip = list_clip;
@@ -651,18 +655,18 @@ fn main() {
                     let title = nb_mgr.page_titles.get(i).map(|s| s.as_str()).unwrap_or(page.as_str());
                     let prefix = if is_active { "* " } else { "  " };
                     let display_title = format!("{}{}", prefix, title);
-                    canvas.draw_text(&display_title, layout.page_list_rect.x + 8, pg_y + 2, if is_active { 0xFF_FF_FF_FF } else { 0xFF_D4_D4_D4 });
+                    fonts.ui_bold.draw_text(&mut canvas, &display_title, layout.page_list_rect.x + 8, pg_y + 2, if is_active { 0xFF_FF_FF_FF } else { 0xFF_D4_D4_D4 });
 
                     // Subtitle line: formatted mtime and word count
                     let mtime = nb_mgr.page_mtimes.get(i).copied().unwrap_or(0);
                     let words = nb_mgr.page_words.get(i).copied().unwrap_or(0);
                     let sub_str = format!("  {} | {}w", format_unix_timestamp(mtime), words);
-                    canvas.draw_text(&sub_str, layout.page_list_rect.x + 8, pg_y + 18, 0xFF_5C_63_70);
+                    fonts.ui.draw_text(&mut canvas, &sub_str, layout.page_list_rect.x + 8, pg_y + 18, 0xFF_5C_63_70);
                 }
                 canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
             }
             MiddlePaneMode::Outline => {
-                canvas.draw_text("=== OUTLINE ===", layout.page_list_rect.x + 10, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
+                fonts.ui_bold.draw_text(&mut canvas, "=== OUTLINE ===", layout.page_list_rect.x + 10, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
 
                 let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 46, layout.page_list_rect.width, layout.page_list_rect.height - 46);
                 canvas.clip = list_clip;
@@ -671,7 +675,7 @@ fn main() {
                 let outline_items = extract_outline(&parser.blocks, &doc_bytes);
 
                 if outline_items.is_empty() {
-                    canvas.draw_text("  (No headings found)", layout.page_list_rect.x + 10, layout.page_list_rect.y + 54, 0xFF_5C_63_70);
+                    fonts.ui.draw_text(&mut canvas, "  (No headings found)", layout.page_list_rect.x + 10, layout.page_list_rect.y + 54, 0xFF_5C_63_70);
                 } else {
                     for (i, item) in outline_items.iter().enumerate() {
                         let row_y = layout.page_list_rect.y + 48 + (i as i32 * 24) - page_list_scroll_y;
@@ -683,8 +687,8 @@ fn main() {
                         }
                         let indent = ((item.level.saturating_sub(1)) as i32) * 8;
                         let tag = format!("H{}", item.level);
-                        canvas.draw_text(&tag, layout.page_list_rect.x + 10 + indent, row_y, 0xFF_4E_C9_B0);
-                        canvas.draw_text(&item.title, layout.page_list_rect.x + 32 + indent, row_y, 0xFF_D4_D4_D4);
+                        fonts.ui_bold.draw_text(&mut canvas, &tag, layout.page_list_rect.x + 10 + indent, row_y, 0xFF_4E_C9_B0);
+                        fonts.ui.draw_text(&mut canvas, &item.title, layout.page_list_rect.x + 36 + indent, row_y, 0xFF_D4_D4_D4);
                     }
                 }
                 canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
@@ -693,15 +697,15 @@ fn main() {
                 let query_box = Rect::new(layout.page_list_rect.x + 6, layout.page_list_rect.y + 26, layout.page_list_rect.width - 12, 20);
                 canvas.fill_rect(query_box, 0xFF_18_1A_1F);
                 let q_str = format!("Find: {}|", search_query);
-                canvas.draw_text(&q_str, query_box.x + 6, query_box.y + 2, 0xFF_E5_C0_7B);
+                fonts.ui.draw_text(&mut canvas, &q_str, query_box.x + 6, query_box.y + 2, 0xFF_E5_C0_7B);
 
                 let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 50, layout.page_list_rect.width, layout.page_list_rect.height - 50);
                 canvas.clip = list_clip;
 
                 if search_query.is_empty() {
-                    canvas.draw_text("  Type to search notes...", layout.page_list_rect.x + 8, layout.page_list_rect.y + 56, 0xFF_5C_63_70);
+                    fonts.ui.draw_text(&mut canvas, "  Type to search notes...", layout.page_list_rect.x + 8, layout.page_list_rect.y + 56, 0xFF_5C_63_70);
                 } else if search_hits.is_empty() {
-                    canvas.draw_text("  No matches found.", layout.page_list_rect.x + 8, layout.page_list_rect.y + 56, 0xFF_E0_6C_75);
+                    fonts.ui.draw_text(&mut canvas, "  No matches found.", layout.page_list_rect.x + 8, layout.page_list_rect.y + 56, 0xFF_E0_6C_75);
                 } else {
                     for (i, hit) in search_hits.iter().enumerate() {
                         let row_y = layout.page_list_rect.y + 52 + (i as i32 * 36) - page_list_scroll_y;
@@ -712,14 +716,14 @@ fn main() {
                             break;
                         }
                         let header = format!("{}:{}", hit.page_name, hit.line_num);
-                        canvas.draw_text(&header, layout.page_list_rect.x + 8, row_y + 2, 0xFF_61_AF_EF);
-                        canvas.draw_text(&hit.line_text, layout.page_list_rect.x + 8, row_y + 18, 0xFF_D4_D4_D4);
+                        fonts.ui_bold.draw_text(&mut canvas, &header, layout.page_list_rect.x + 8, row_y + 2, 0xFF_61_AF_EF);
+                        fonts.ui.draw_text(&mut canvas, &hit.line_text, layout.page_list_rect.x + 8, row_y + 18, 0xFF_D4_D4_D4);
                     }
                 }
                 canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
             }
             MiddlePaneMode::Backlinks => {
-                canvas.draw_text("=== BACKLINKS ===", layout.page_list_rect.x + 10, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
+                fonts.ui_bold.draw_text(&mut canvas, "=== BACKLINKS ===", layout.page_list_rect.x + 10, layout.page_list_rect.y + 28, 0xFF_61_AF_EF);
 
                 let list_clip = Rect::new(layout.page_list_rect.x, layout.page_list_rect.y + 46, layout.page_list_rect.width, layout.page_list_rect.height - 46);
                 canvas.clip = list_clip;
@@ -728,7 +732,7 @@ fn main() {
                 let bl = nb_mgr.get_backlinks(cur_page);
 
                 if bl.is_empty() {
-                    canvas.draw_text("  (No backlinks found)", layout.page_list_rect.x + 10, layout.page_list_rect.y + 54, 0xFF_5C_63_70);
+                    fonts.ui.draw_text(&mut canvas, "  (No backlinks found)", layout.page_list_rect.x + 10, layout.page_list_rect.y + 54, 0xFF_5C_63_70);
                 } else {
                     for (i, ref_note) in bl.iter().enumerate() {
                         let row_y = layout.page_list_rect.y + 48 + (i as i32 * 24) - page_list_scroll_y;
@@ -738,7 +742,7 @@ fn main() {
                         if row_y > list_clip.bottom() {
                             break;
                         }
-                        canvas.draw_text(&format!("<- {}", ref_note), layout.page_list_rect.x + 10, row_y, 0xFF_98_C3_79);
+                        fonts.ui.draw_text(&mut canvas, &format!("<- {}", ref_note), layout.page_list_rect.x + 10, row_y, 0xFF_98_C3_79);
                     }
                 }
                 canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
@@ -782,10 +786,10 @@ fn main() {
                 let line_start = char_count_acc;
                 let line_end = line_start + line_len;
 
-                if ed_y + 18 >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
+                if ed_y + line_h >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
                     // Line number in gutter
                     let num_str = format!("{:3}", line_num);
-                    canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
+                    fonts.editor.draw_text(&mut canvas, &num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
 
                     let text_x = layout.editor_rect.x + gutter_w + 10;
 
@@ -793,36 +797,36 @@ fn main() {
                     if !selection.is_collapsed() && sel_start < line_end && sel_end > line_start {
                         let hl_start = sel_start.max(line_start) - line_start;
                         let hl_end = sel_end.min(line_end) - line_start;
-                        let hl_x1 = text_x + (hl_start as i32) * 8;
-                        let hl_x2 = text_x + (hl_end as i32) * 8;
-                        canvas.fill_rect(Rect::new(hl_x1, ed_y, (hl_x2 - hl_x1).max(4), 18), 0xFF_26_4F_78);
+                        let hl_x1 = text_x + (hl_start as i32) * char_w;
+                        let hl_x2 = text_x + (hl_end as i32) * char_w;
+                        canvas.fill_rect(Rect::new(hl_x1, ed_y, (hl_x2 - hl_x1).max(4), line_h), 0xFF_26_4F_78);
                     }
 
                     // Draw line text with Markdown syntax highlighting
-                    render_syntax_highlighted_editor_line(&mut canvas, line, text_x, ed_y);
+                    render_syntax_highlighted_editor_line(&mut canvas, line, text_x, ed_y, &fonts.editor);
 
                     // Caret cursor
                     if focus == ActiveFocus::Editor && cursor_pos >= line_start && cursor_pos <= line_end {
                         let col = (cursor_pos - line_start) as i32;
-                        let cur_x = text_x + col * 8;
+                        let cur_x = text_x + col * char_w;
                         if cur_x + 2 < layout.editor_rect.right() {
-                            canvas.fill_rect(Rect::new(cur_x, ed_y, 2, 16), 0xFF_52_8B_FF);
+                            canvas.fill_rect(Rect::new(cur_x, ed_y, 2, line_h - 2), 0xFF_52_8B_FF);
                         }
                     }
                 }
 
                 char_count_acc += line_len + 1; // + 1 for \n
                 line_num += 1;
-                ed_y += 18;
+                ed_y += line_h;
             }
 
             // If buffer ends with newline or is empty, draw cursor on final line
-            if char_count_acc <= cursor_pos && ed_y + 18 >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
+            if char_count_acc <= cursor_pos && ed_y + line_h >= layout.editor_rect.y && ed_y <= layout.editor_rect.bottom() {
                 let num_str = format!("{:3}", line_num);
-                canvas.draw_text(&num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
+                fonts.editor.draw_text(&mut canvas, &num_str, layout.editor_rect.x + 6, ed_y, 0xFF_5C_63_70);
                 if focus == ActiveFocus::Editor {
                     let text_x = layout.editor_rect.x + gutter_w + 10;
-                    canvas.fill_rect(Rect::new(text_x, ed_y, 2, 16), 0xFF_52_8B_FF);
+                    canvas.fill_rect(Rect::new(text_x, ed_y, 2, line_h - 2), 0xFF_52_8B_FF);
                 }
             }
 
@@ -843,13 +847,14 @@ fn main() {
             parser.parse_full(&doc_bytes);
 
             canvas.clip = layout.preview_rect;
-            click_targets = PreviewRenderer::render_preview_with_content(
+            click_targets = PreviewRenderer::render_preview_with_fonts(
                 &mut canvas,
                 &parser.blocks,
                 &doc_bytes,
                 scroll_y,
                 layout.preview_rect.width,
                 layout.preview_rect.height,
+                Some(&fonts),
             );
             canvas.clip = Rect::new(0, 0, win_w as i32, win_h as i32);
         }
@@ -870,7 +875,7 @@ fn main() {
             " {}{} | Mode: {} | Ln {}, Col {} | Focus: {:?} | {} bytes, {} words",
             status, dirty_flag, mode_str, caret_line + 1, caret_col + 1, focus, buffer.len(), word_count
         );
-        canvas.draw_text(&status_text, 8, layout.status_bar_rect.y + 4, 0xFF_FF_FF_FF);
+        fonts.ui.draw_text(&mut canvas, &status_text, 8, layout.status_bar_rect.y + 4, 0xFF_FF_FF_FF);
 
         click_targets
     };
@@ -1016,8 +1021,8 @@ fn main() {
                             let gutter_w = 44;
                             let text_x = layout.editor_rect.x + gutter_w + 10;
                             let text_y = layout.editor_rect.y + 10;
-                            let target_line = ((mouse_y - text_y + editor_scroll_y) / 18).max(0) as usize;
-                            let target_col = ((mouse_x - text_x) / 8).max(0) as usize;
+                            let target_line = ((mouse_y - text_y + editor_scroll_y) / line_h).max(0) as usize;
+                            let target_col = ((mouse_x - text_x) / char_w).max(0) as usize;
                             let new_off = offset_from_line_col(&buffer, target_line, target_col);
                             selection.head = Cursor::new(new_off, target_line, target_col);
                             cursor_pos = new_off;
@@ -1262,8 +1267,8 @@ fn main() {
                                 let gutter_w = 44;
                                 let text_x = layout.editor_rect.x + gutter_w + 10;
                                 let text_y = layout.editor_rect.y + 10;
-                                let target_line = ((mouse_y - text_y + editor_scroll_y) / 18).max(0) as usize;
-                                let target_col = ((mouse_x - text_x) / 8).max(0) as usize;
+                                let target_line = ((mouse_y - text_y + editor_scroll_y) / line_h).max(0) as usize;
+                                let target_col = ((mouse_x - text_x) / char_w).max(0) as usize;
                                 let off = offset_from_line_col(&buffer, target_line, target_col);
                                 cursor_pos = off;
                                 selection = Selection::collapsed(Cursor::new(off, target_line, target_col));
@@ -1357,8 +1362,8 @@ fn main() {
                             } else if mouse_x < layout.page_list_rect.right() {
                                 page_list_scroll_y = (page_list_scroll_y - 24).max(0);
                             } else if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
-                                editor_scroll_y = (editor_scroll_y - 24).max(0);
-                                let top_line = (editor_scroll_y / 18) as usize;
+                                editor_scroll_y = (editor_scroll_y - line_h).max(0);
+                                let top_line = (editor_scroll_y / line_h) as usize;
                                 let off = buffer.line_to_offset(top_line);
                                 let mut doc_bytes = vec![0u8; buffer.len()];
                                 buffer.copy_range(0, buffer.len(), &mut doc_bytes);
@@ -1372,7 +1377,7 @@ fn main() {
                                 buffer.copy_range(0, buffer.len(), &mut doc_bytes);
                                 let layouts = PreviewRenderer::compute_layouts(&parser.blocks, &doc_bytes, layout.preview_rect.width);
                                 if let Some(bl) = layouts.iter().find(|l| l.y + l.height >= scroll_y) {
-                                    editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * 18;
+                                    editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * line_h;
                                 }
                             }
                             needs_redraw = true;
@@ -1383,8 +1388,8 @@ fn main() {
                             } else if mouse_x < layout.page_list_rect.right() {
                                 page_list_scroll_y += 24;
                             } else if mouse_x < layout.editor_rect.right() && mouse_x >= layout.editor_rect.x {
-                                editor_scroll_y += 24;
-                                let top_line = (editor_scroll_y / 18) as usize;
+                                editor_scroll_y += line_h;
+                                let top_line = (editor_scroll_y / line_h) as usize;
                                 let off = buffer.line_to_offset(top_line);
                                 let mut doc_bytes = vec![0u8; buffer.len()];
                                 buffer.copy_range(0, buffer.len(), &mut doc_bytes);
@@ -1398,7 +1403,7 @@ fn main() {
                                 buffer.copy_range(0, buffer.len(), &mut doc_bytes);
                                 let layouts = PreviewRenderer::compute_layouts(&parser.blocks, &doc_bytes, layout.preview_rect.width);
                                 if let Some(bl) = layouts.iter().find(|l| l.y + l.height >= scroll_y) {
-                                    editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * 18;
+                                    editor_scroll_y = (buffer.offset_to_line(bl.source_start).0 as i32) * line_h;
                                 }
                             }
                             needs_redraw = true;
@@ -1889,12 +1894,12 @@ fn main() {
                             width as i32, height as i32, sidebar_w, page_list_w, 3, view_mode, 28, 24,
                         );
                         let (caret_line, _) = buffer.offset_to_line(cursor_pos);
-                        let caret_y = (caret_line as i32) * 18;
-                        let visible_h = (layout.editor_rect.height - 24).max(18);
+                        let caret_y = (caret_line as i32) * line_h;
+                        let visible_h = (layout.editor_rect.height - 24).max(line_h);
                         if caret_y < editor_scroll_y {
                             editor_scroll_y = caret_y;
-                        } else if caret_y + 18 > editor_scroll_y + visible_h {
-                            editor_scroll_y = (caret_y + 18 - visible_h).max(0);
+                        } else if caret_y + line_h > editor_scroll_y + visible_h {
+                            editor_scroll_y = (caret_y + line_h - visible_h).max(0);
                         }
 
                         needs_redraw = true;

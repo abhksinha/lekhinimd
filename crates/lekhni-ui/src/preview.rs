@@ -16,6 +16,7 @@ use alloc::vec::Vec;
 use lekhni_md::block::{BlockKind, BlockTable};
 use lekhni_raster::canvas::Canvas;
 use lekhni_raster::damage::Rect;
+use lekhni_raster::vector_font::{CachedFont, FontCollection};
 
 /// Interactive clickable target detected during preview rendering.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -153,6 +154,20 @@ impl PreviewRenderer {
         viewport_w: i32,
         viewport_h: i32,
     ) -> Vec<ClickableTarget> {
+        Self::render_preview_with_fonts(canvas, blocks, doc_bytes, scroll_y, viewport_w, viewport_h, None)
+    }
+
+    /// Renders visible Markdown blocks along with their rich formatted text content using optional modern vector fonts.
+    #[cfg(feature = "alloc")]
+    pub fn render_preview_with_fonts(
+        canvas: &mut Canvas,
+        blocks: &BlockTable,
+        doc_bytes: &[u8],
+        scroll_y: i32,
+        viewport_w: i32,
+        viewport_h: i32,
+        fonts: Option<&FontCollection>,
+    ) -> Vec<ClickableTarget> {
         let origin_x = canvas.clip.x;
         let origin_y = canvas.clip.y;
         let viewport_rect = Rect::new(origin_x, origin_y, viewport_w, viewport_h);
@@ -181,8 +196,12 @@ impl PreviewRenderer {
                 BlockKind::Heading1 => {
                     let clean = block_str.lines().next().unwrap_or("").trim();
                     let heading_label = clean.trim_start_matches('#').trim();
-                    // 2x Scaled Heading 1 font
-                    canvas.draw_text_scaled(heading_label, origin_x + 20, screen_y + 4, 0xFF_FF_FF_FF, 2);
+                    if let Some(f) = fonts {
+                        f.h1.draw_text(canvas, heading_label, origin_x + 20, screen_y + 4, 0xFF_FF_FF_FF);
+                    } else {
+                        // 2x Scaled Heading 1 font
+                        canvas.draw_text_scaled(heading_label, origin_x + 20, screen_y + 4, 0xFF_FF_FF_FF, 2);
+                    }
                     canvas.fill_rect(Rect::new(origin_x + 20, screen_y + 38, viewport_w - 40, 2), 0xFF_4A_90_E2);
                     click_targets.push(ClickableTarget::Heading {
                         rect: block_rect,
@@ -192,8 +211,12 @@ impl PreviewRenderer {
                 BlockKind::Heading2 => {
                     let clean = block_str.lines().next().unwrap_or("").trim();
                     let heading_label = clean.trim_start_matches('#').trim();
-                    canvas.draw_text(heading_label, origin_x + 20, screen_y + 6, 0xFF_FF_FF_FF);
-                    canvas.draw_text(heading_label, origin_x + 21, screen_y + 6, 0xFF_FF_FF_FF); // bold
+                    if let Some(f) = fonts {
+                        f.h2.draw_text(canvas, heading_label, origin_x + 20, screen_y + 6, 0xFF_FF_FF_FF);
+                    } else {
+                        canvas.draw_text(heading_label, origin_x + 20, screen_y + 6, 0xFF_FF_FF_FF);
+                        canvas.draw_text(heading_label, origin_x + 21, screen_y + 6, 0xFF_FF_FF_FF); // bold
+                    }
                     canvas.fill_rect(Rect::new(origin_x + 20, screen_y + 28, viewport_w - 40, 1), 0xFF_3E_44_51);
                     click_targets.push(ClickableTarget::Heading {
                         rect: block_rect,
@@ -203,7 +226,11 @@ impl PreviewRenderer {
                 BlockKind::Heading3 => {
                     let clean = block_str.lines().next().unwrap_or("").trim();
                     let heading_label = clean.trim_start_matches('#').trim();
-                    canvas.draw_text(heading_label, origin_x + 20, screen_y + 4, 0xFF_4E_C9_B0);
+                    if let Some(f) = fonts {
+                        f.h3.draw_text(canvas, heading_label, origin_x + 20, screen_y + 4, 0xFF_4E_C9_B0);
+                    } else {
+                        canvas.draw_text(heading_label, origin_x + 20, screen_y + 4, 0xFF_4E_C9_B0);
+                    }
                     click_targets.push(ClickableTarget::Heading {
                         rect: block_rect,
                         source_byte_offset: layout.source_start,
@@ -212,7 +239,11 @@ impl PreviewRenderer {
                 BlockKind::Heading4 | BlockKind::Heading5 | BlockKind::Heading6 => {
                     let clean = block_str.lines().next().unwrap_or("").trim();
                     let heading_label = clean.trim_start_matches('#').trim();
-                    canvas.draw_text(heading_label, origin_x + 20, screen_y + 4, 0xFF_E5_C0_7B);
+                    if let Some(f) = fonts {
+                        f.body.draw_text(canvas, heading_label, origin_x + 20, screen_y + 4, 0xFF_E5_C0_7B);
+                    } else {
+                        canvas.draw_text(heading_label, origin_x + 20, screen_y + 4, 0xFF_E5_C0_7B);
+                    }
                     click_targets.push(ClickableTarget::Heading {
                         rect: block_rect,
                         source_byte_offset: layout.source_start,
@@ -233,7 +264,12 @@ impl PreviewRenderer {
 
                     // Header bar
                     canvas.fill_rect(Rect::new(block_rect.x + 1, block_rect.y + 1, block_rect.width - 2, 20), 0xFF_1E_22_27);
-                    canvas.draw_text(lang_display, block_rect.right() - (lang_display.len() as i32 * 8) - 12, screen_y + 4, 0xFF_5C_63_70);
+                    if let Some(f) = fonts {
+                        let (tw, _) = f.ui.measure_text(lang_display);
+                        f.ui.draw_text(canvas, lang_display, block_rect.right() - tw - 12, screen_y + 4, 0xFF_5C_63_70);
+                    } else {
+                        canvas.draw_text(lang_display, block_rect.right() - (lang_display.len() as i32 * 8) - 12, screen_y + 4, 0xFF_5C_63_70);
+                    }
 
                     let mut code_y = screen_y + 24;
                     let mut code_line_num = 1;
@@ -244,8 +280,13 @@ impl PreviewRenderer {
                         }
                         if code_y + 18 <= block_rect.bottom() {
                             let num_str = format!("{:2}", code_line_num);
-                            canvas.draw_text(&num_str, block_rect.x + 8, code_y, 0xFF_4B_52_63);
-                            canvas.draw_text(line, block_rect.x + 34, code_y, 0xFF_98_C3_79);
+                            if let Some(f) = fonts {
+                                f.editor.draw_text(canvas, &num_str, block_rect.x + 8, code_y, 0xFF_4B_52_63);
+                                f.editor.draw_text(canvas, line, block_rect.x + 34, code_y, 0xFF_98_C3_79);
+                            } else {
+                                canvas.draw_text(&num_str, block_rect.x + 8, code_y, 0xFF_4B_52_63);
+                                canvas.draw_text(line, block_rect.x + 34, code_y, 0xFF_98_C3_79);
+                            }
                         }
                         code_y += 18;
                         code_line_num += 1;
@@ -280,8 +321,12 @@ impl PreviewRenderer {
                             canvas.fill_rect(Rect::new(row_rect.x, row_rect.bottom() - 1, row_rect.width, 1), 0xFF_61_AF_EF);
                             for (c_idx, cell) in cells.iter().enumerate() {
                                 let cx = origin_x + 24 + (c_idx as i32) * col_w;
-                                canvas.draw_text(cell, cx, table_y + 3, 0xFF_61_AF_EF);
-                                canvas.draw_text(cell, cx + 1, table_y + 3, 0xFF_61_AF_EF); // bold
+                                if let Some(f) = fonts {
+                                    f.ui_bold.draw_text(canvas, cell, cx, table_y + 3, 0xFF_61_AF_EF);
+                                } else {
+                                    canvas.draw_text(cell, cx, table_y + 3, 0xFF_61_AF_EF);
+                                    canvas.draw_text(cell, cx + 1, table_y + 3, 0xFF_61_AF_EF); // bold
+                                }
                             }
                             is_header = false;
                         } else {
@@ -289,7 +334,11 @@ impl PreviewRenderer {
                             canvas.fill_rect(Rect::new(row_rect.x, row_rect.bottom() - 1, row_rect.width, 1), 0xFF_2D_31_39);
                             for (c_idx, cell) in cells.iter().enumerate() {
                                 let cx = origin_x + 24 + (c_idx as i32) * col_w;
-                                canvas.draw_text(cell, cx, table_y + 3, 0xFF_AB_B2_BF);
+                                if let Some(f) = fonts {
+                                    f.ui.draw_text(canvas, cell, cx, table_y + 3, 0xFF_AB_B2_BF);
+                                } else {
+                                    canvas.draw_text(cell, cx, table_y + 3, 0xFF_AB_B2_BF);
+                                }
                             }
                         }
 
@@ -300,9 +349,10 @@ impl PreviewRenderer {
                     canvas.fill_rect(Rect::new(origin_x + 20, screen_y, 4, layout.height), 0xFF_00_7A_CC);
                     let mut quote_y = screen_y + 4;
                     let max_c = ((viewport_w - 60) / 8).max(10) as usize;
+                    let font_body = fonts.map(|f| &f.body);
                     for l in block_str.lines() {
                         let clean = l.trim_start().trim_start_matches('>').trim();
-                        wrap_and_render_inline(canvas, clean, origin_x + 32, &mut quote_y, max_c, 0xFF_9C_DC_FE, &mut click_targets);
+                        wrap_and_render_inline(canvas, clean, origin_x + 32, &mut quote_y, max_c, 0xFF_9C_DC_FE, font_body, &mut click_targets);
                     }
                 }
                 BlockKind::ThematicBreak => {
@@ -312,6 +362,7 @@ impl PreviewRenderer {
                     let mut list_y = screen_y + 3;
                     let max_c = ((viewport_w - 60) / 8).max(10) as usize;
                     let mut line_offset_acc = layout.source_start;
+                    let font_body = fonts.map(|f| &f.body);
 
                     for l in block_str.lines() {
                         let clean = l.trim();
@@ -326,21 +377,29 @@ impl PreviewRenderer {
                                 source_byte_offset: line_offset_acc,
                                 is_checked: false,
                             });
-                            wrap_and_render_inline(canvas, rest, origin_x + 40, &mut list_y, max_c, 0xFF_AB_B2_BF, &mut click_targets);
+                            wrap_and_render_inline(canvas, rest, origin_x + 40, &mut list_y, max_c, 0xFF_AB_B2_BF, font_body, &mut click_targets);
                         } else if let Some(rest) = clean.strip_prefix("- [x] ") {
                             let check_rect = Rect::new(origin_x + 20, list_y + 2, 14, 14);
                             canvas.fill_rect(check_rect, 0xFF_98_C3_79);
-                            canvas.draw_text("v", origin_x + 23, list_y + 1, 0xFF_1E_1E_1E);
+                            if let Some(f) = fonts {
+                                f.ui_bold.draw_text(canvas, "v", origin_x + 23, list_y + 1, 0xFF_1E_1E_1E);
+                            } else {
+                                canvas.draw_text("v", origin_x + 23, list_y + 1, 0xFF_1E_1E_1E);
+                            }
                             click_targets.push(ClickableTarget::Checkbox {
                                 rect: check_rect,
                                 source_byte_offset: line_offset_acc,
                                 is_checked: true,
                             });
-                            wrap_and_render_inline(canvas, rest, origin_x + 40, &mut list_y, max_c, 0xFF_98_C3_79, &mut click_targets);
+                            wrap_and_render_inline(canvas, rest, origin_x + 40, &mut list_y, max_c, 0xFF_98_C3_79, font_body, &mut click_targets);
                         } else {
-                            canvas.draw_char('*', origin_x + 20, list_y + 1, 0xFF_61_AF_EF);
+                            if let Some(f) = fonts {
+                                f.ui_bold.draw_text(canvas, "*", origin_x + 20, list_y + 1, 0xFF_61_AF_EF);
+                            } else {
+                                canvas.draw_char('*', origin_x + 20, list_y + 1, 0xFF_61_AF_EF);
+                            }
                             let rest = clean.trim_start_matches(&['*', '-', '+'][..]).trim_start();
-                            wrap_and_render_inline(canvas, rest, origin_x + 34, &mut list_y, max_c, 0xFF_D4_D4_D4, &mut click_targets);
+                            wrap_and_render_inline(canvas, rest, origin_x + 34, &mut list_y, max_c, 0xFF_D4_D4_D4, font_body, &mut click_targets);
                         }
 
                         line_offset_acc += line_len + 1;
@@ -349,6 +408,7 @@ impl PreviewRenderer {
                 _ => { // Paragraph
                     let mut para_y = screen_y + 4;
                     let max_c = ((viewport_w - 40) / 8).max(10) as usize;
+                    let font_body = fonts.map(|f| &f.body);
 
                     for l in block_str.lines() {
                         let clean = l.trim();
@@ -365,13 +425,19 @@ impl PreviewRenderer {
                             canvas.fill_rect(Rect::new(img_box.x, img_box.y, 1, img_box.height), 0xFF_3E_44_51);
                             canvas.fill_rect(Rect::new(img_box.right() - 1, img_box.y, 1, img_box.height), 0xFF_3E_44_51);
 
-                            canvas.draw_text("[IMAGE]", img_box.x + 12, img_box.y + 10, 0xFF_61_AF_EF);
-                            canvas.draw_text(alt_text, img_box.x + 72, img_box.y + 10, 0xFF_FF_FF_FF);
-                            canvas.draw_text(path_text, img_box.x + 12, img_box.y + 28, 0xFF_5C_63_70);
+                            if let Some(f) = fonts {
+                                f.ui_bold.draw_text(canvas, "[IMAGE]", img_box.x + 12, img_box.y + 10, 0xFF_61_AF_EF);
+                                f.body.draw_text(canvas, alt_text, img_box.x + 72, img_box.y + 10, 0xFF_FF_FF_FF);
+                                f.ui.draw_text(canvas, path_text, img_box.x + 12, img_box.y + 28, 0xFF_5C_63_70);
+                            } else {
+                                canvas.draw_text("[IMAGE]", img_box.x + 12, img_box.y + 10, 0xFF_61_AF_EF);
+                                canvas.draw_text(alt_text, img_box.x + 72, img_box.y + 10, 0xFF_FF_FF_FF);
+                                canvas.draw_text(path_text, img_box.x + 12, img_box.y + 28, 0xFF_5C_63_70);
+                            }
 
                             para_y += 54;
                         } else {
-                            wrap_and_render_inline(canvas, clean, origin_x + 20, &mut para_y, max_c, 0xFF_D4_D4_D4, &mut click_targets);
+                            wrap_and_render_inline(canvas, clean, origin_x + 20, &mut para_y, max_c, 0xFF_D4_D4_D4, font_body, &mut click_targets);
                         }
                     }
                 }
@@ -418,6 +484,7 @@ fn count_wrapped_lines(text: &str, max_chars: usize) -> usize {
 
 /// Wraps text to multiple lines and renders each line with inline markdown formatting.
 #[cfg(feature = "alloc")]
+#[allow(clippy::too_many_arguments)]
 fn wrap_and_render_inline(
     canvas: &mut Canvas,
     text: &str,
@@ -425,6 +492,7 @@ fn wrap_and_render_inline(
     curr_y: &mut i32,
     max_chars: usize,
     default_color: u32,
+    font: Option<&CachedFont>,
     click_targets: &mut Vec<ClickableTarget>,
 ) {
     if text.is_empty() {
@@ -435,7 +503,7 @@ fn wrap_and_render_inline(
     while start < text.len() {
         let remaining = &text[start..];
         if remaining.len() <= max_chars {
-            render_inline_markdown(canvas, remaining, x, *curr_y, default_color, click_targets);
+            render_inline_markdown(canvas, remaining, x, *curr_y, default_color, font, click_targets);
             *curr_y += 18;
             break;
         }
@@ -447,7 +515,7 @@ fn wrap_and_render_inline(
             _ => max_chars,
         };
 
-        render_inline_markdown(canvas, &remaining[..split_at], x, *curr_y, default_color, click_targets);
+        render_inline_markdown(canvas, &remaining[..split_at], x, *curr_y, default_color, font, click_targets);
         *curr_y += 18;
         start += split_at;
         while start < text.len() && text.as_bytes()[start] == b' ' {
@@ -464,6 +532,7 @@ fn render_inline_markdown(
     mut x: i32,
     y: i32,
     default_color: u32,
+    font: Option<&CachedFont>,
     click_targets: &mut Vec<ClickableTarget>,
 ) {
     let bytes = line.as_bytes();
@@ -474,9 +543,15 @@ fn render_inline_markdown(
         if i + 1 < bytes.len() && bytes[i] == b'*' && bytes[i + 1] == b'*' {
             if let Some(end) = line[i + 2..].find("**") {
                 let bold_text = &line[i + 2..i + 2 + end];
-                canvas.draw_text(bold_text, x, y, 0xFF_FF_FF_FF);
-                canvas.draw_text(bold_text, x + 1, y, 0xFF_FF_FF_FF); // Double blit for crisp bold weight
-                x += (bold_text.len() as i32) * 8;
+                if let Some(f) = font {
+                    let w = f.draw_text(canvas, bold_text, x, y, 0xFF_FF_FF_FF);
+                    f.draw_text(canvas, bold_text, x + 1, y, 0xFF_FF_FF_FF);
+                    x += w;
+                } else {
+                    canvas.draw_text(bold_text, x, y, 0xFF_FF_FF_FF);
+                    canvas.draw_text(bold_text, x + 1, y, 0xFF_FF_FF_FF);
+                    x += (bold_text.len() as i32) * 8;
+                }
                 i += 4 + end;
                 continue;
             }
@@ -486,8 +561,12 @@ fn render_inline_markdown(
         if i + 1 < bytes.len() && bytes[i] == b'~' && bytes[i + 1] == b'~' {
             if let Some(end) = line[i + 2..].find("~~") {
                 let strike_text = &line[i + 2..i + 2 + end];
-                canvas.draw_text(strike_text, x, y, 0xFF_7F_84_8E);
-                let w = (strike_text.len() as i32) * 8;
+                let w = if let Some(f) = font {
+                    f.draw_text(canvas, strike_text, x, y, 0xFF_7F_84_8E)
+                } else {
+                    canvas.draw_text(strike_text, x, y, 0xFF_7F_84_8E);
+                    (strike_text.len() as i32) * 8
+                };
                 canvas.fill_rect(Rect::new(x, y + 8, w, 1), 0xFF_7F_84_8E);
                 x += w;
                 i += 4 + end;
@@ -499,9 +578,18 @@ fn render_inline_markdown(
         if bytes[i] == b'`' {
             if let Some(end) = line[i + 1..].find('`') {
                 let code_text = &line[i + 1..i + 1 + end];
-                let w = (code_text.len() as i32) * 8 + 6;
-                canvas.fill_rect(Rect::new(x, y - 1, w, 18), 0xFF_28_2C_34);
-                canvas.draw_text(code_text, x + 3, y, 0xFF_E0_6C_75);
+                let (tw, th) = if let Some(f) = font {
+                    f.measure_text(code_text)
+                } else {
+                    ((code_text.len() as i32) * 8, 16)
+                };
+                let w = tw + 8;
+                canvas.fill_rect(Rect::new(x, y - 1, w, th + 2), 0xFF_28_2C_34);
+                if let Some(f) = font {
+                    f.draw_text(canvas, code_text, x + 4, y, 0xFF_E0_6C_75);
+                } else {
+                    canvas.draw_text(code_text, x + 3, y, 0xFF_E0_6C_75);
+                }
                 x += w + 2;
                 i += 2 + end;
                 continue;
@@ -517,10 +605,13 @@ fn render_inline_markdown(
                 } else {
                     (inside, inside)
                 };
-                let w = (label.len() as i32) * 8;
+                let w = if let Some(f) = font {
+                    f.draw_text(canvas, label, x, y, 0xFF_98_C3_79)
+                } else {
+                    canvas.draw_text(label, x, y, 0xFF_98_C3_79);
+                    (label.len() as i32) * 8
+                };
                 let link_rect = Rect::new(x, y, w, 18);
-
-                canvas.draw_text(label, x, y, 0xFF_98_C3_79); // Distinct soft green
                 canvas.fill_rect(Rect::new(x, y + 16, w, 1), 0xFF_98_C3_79);
 
                 let target_clean = target.trim();
@@ -549,10 +640,13 @@ fn render_inline_markdown(
                     if let Some(close_p) = rest.find(')') {
                         let label = &line[i + 1..i + 1 + close_b];
                         let url = &rest[1..close_p];
-                        let w = (label.len() as i32) * 8;
+                        let w = if let Some(f) = font {
+                            f.draw_text(canvas, label, x, y, 0xFF_61_AF_EF)
+                        } else {
+                            canvas.draw_text(label, x, y, 0xFF_61_AF_EF);
+                            (label.len() as i32) * 8
+                        };
                         let link_rect = Rect::new(x, y, w, 18);
-
-                        canvas.draw_text(label, x, y, 0xFF_61_AF_EF);
                         canvas.fill_rect(Rect::new(x, y + 16, w, 1), 0xFF_61_AF_EF);
 
                         click_targets.push(ClickableTarget::Link {
@@ -572,16 +666,27 @@ fn render_inline_markdown(
         if bytes[i] == b'*' {
             if let Some(end) = line[i + 1..].find('*') {
                 let italic_text = &line[i + 1..i + 1 + end];
-                canvas.draw_text(italic_text, x, y, 0xFF_E5_C0_7B);
-                x += (italic_text.len() as i32) * 8;
+                let w = if let Some(f) = font {
+                    f.draw_text(canvas, italic_text, x, y, 0xFF_E5_C0_7B)
+                } else {
+                    canvas.draw_text(italic_text, x, y, 0xFF_E5_C0_7B);
+                    (italic_text.len() as i32) * 8
+                };
+                x += w;
                 i += 2 + end;
                 continue;
             }
         }
 
         let ch = line[i..].chars().next().unwrap_or(' ');
-        canvas.draw_char(ch, x, y, default_color);
-        x += 8;
+        if let Some(f) = font {
+            let mut buf = [0u8; 4];
+            let s = ch.encode_utf8(&mut buf);
+            x += f.draw_text(canvas, s, x, y, default_color);
+        } else {
+            canvas.draw_char(ch, x, y, default_color);
+            x += 8;
+        }
         i += ch.len_utf8();
     }
 }

@@ -12,3 +12,4 @@ alloc = ["lekhni-base/alloc"]
 
 [dependencies]
 lekhni-base = { path = "../lekhni-base", default-features = false }
+fontdue = { version = "0.9.4", default-features = false }

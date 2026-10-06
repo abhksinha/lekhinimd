@@ -12,6 +12,9 @@ pub struct AtlasGlyph {
     pub y: u16,
     pub width: u16,
     pub height: u16,
+    pub offset_x: i16,
+    pub offset_y: i16,
+    pub advance_x: u16,
 }
 
 /// A shelf-based 2D texture atlas storing 8-bit alpha masks.
@@ -65,6 +68,9 @@ impl GlyphAtlas {
             y: self.cursor_y as u16,
             width: w as u16,
             height: h as u16,
+            offset_x: 0,
+            offset_y: 0,
+            advance_x: w as u16,
         };
 
         self.cursor_x += w;
